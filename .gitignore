@@ -1,0 +1,6 @@
+# Never commit a real settings file or anything machine-specific / secret
+settings.json
+settings.local.json
+*.local.json
+.DS_Store
+*.log
