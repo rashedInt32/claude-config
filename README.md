@@ -1,13 +1,13 @@
 # claude-config
 
 A curated [Claude Code](https://docs.claude.com/en/docs/claude-code) permission setup
-plus three safety hooks. The guiding principle:
+plus four safety hooks. The guiding principle:
 
 > **Read freely, gate on write.** Investigation/read commands run without prompting;
 > anything that changes state (writes, pushes, history rewrites, installs, deletes)
 > still asks.
 
-The real value is `settings.example.json` (the permission model) and the three hooks
+The real value is `settings.example.json` (the permission model) and the four hooks
 in `hooks/` that close gaps a static allowlist can't.
 
 ## What's inside
@@ -17,6 +17,7 @@ hooks/
   ask-on-package-install.sh   # always confirm npm/pnpm/yarn/bun installs
   git-flag-guard.sh           # close the `git -C` / global-flag bypass
   allow-localhost-curl.sh     # auto-allow localhost curl/wget, ask otherwise
+  find-guard.sh               # auto-allow read-only find, ask on -delete/-exec/...
 settings.example.json         # permissions (allow/deny/ask) + hook wiring
 ```
 
@@ -51,7 +52,7 @@ settings.example.json         # permissions (allow/deny/ask) + hook wiring
    startup** — changes to `allow`/`deny`/`ask` only take effect after a restart (or
    reopening via `/hooks`).
 
-## The three hooks
+## The four hooks
 
 ### `ask-on-package-install.sh`
 The package managers (`npm`, `pnpm`, `yarn`, `bun`) are allowlisted so build/run/test
@@ -81,6 +82,20 @@ overrides a hook's `allow`). This hook is their sole authority:
 So localhost health-checks and port probes run silently, while outbound curl, file
 writes (`-o`, `-O`, `>`), `@host` tricks, and `curl localhost && rm -rf ~` all still
 prompt (and `deny` rules still hard-block the dangerous ones).
+
+### `find-guard.sh`
+`find` is dual-use — `-delete` and `-exec rm {} \;` are destructive — so it's deliberately
+**not** allowlisted. But that means every read-only search prompts, which is noise. This
+hook makes `find` usable without opening the destructive door:
+- **allow** read-only `find` (`-type`, `-name`, `-ipath`, `-print`, `-prune`, …),
+- **ask** when it sees `-delete`, `-exec`, `-execdir`, `-ok`, `-fprint*`, `-fls`, a file
+  redirect, a `$(…)`, or a dangerous companion command (`rm`, `xargs`, `git`, …).
+
+Why a hook instead of "just use `fd`"? Because a *preference* to use `fd` can't be relied
+on — it doesn't propagate across projects or sessions, and pasted `find` one-liners ignore
+it. A hook in `settings.json` is **global and deterministic**: read-only `find` works
+everywhere, destructive `find` is gated everywhere. (`fd` is still allowlisted and is a
+fine, faster choice when you reach for it.)
 
 ## Permission model at a glance
 
