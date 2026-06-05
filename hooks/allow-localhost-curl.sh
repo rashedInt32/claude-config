@@ -38,8 +38,11 @@ unquoted=$(printf '%s' "$cmd" | sed -E "s/'[^']*'//g; s/\"[^\"]*\"//g")
 sanitized=$(printf '%s' "$unquoted" | sed -E 's/[12]?>>?[[:space:]]*\/dev\/null//g; s/[12]?>&[12]//g; s/&>[[:space:]]*\/dev\/null//g')
 printf '%s' "$sanitized" | grep -q '>' && emit ask "$ASK"
 
-# (5) every http(s) URL must be a localhost host
-urls=$(printf '%s' "$cmd" | grep -oE "https?://[^[:space:]\"'\`)|;&>]+")
+# (5) every URL/host target must be a localhost host. Normalize scheme-less
+# loopback authorities (e.g. `localhost:3000/`) to scheme form so they're
+# recognized; bare NON-loopback hosts stay unmatched and fall through to `ask`.
+cmd_urls=$(printf '%s' "$cmd" | sed -E 's#(^|[[:space:]=(])(localhost|127\.0\.0\.1|\[::1\]|::1)#\1http://\2#g')
+urls=$(printf '%s' "$cmd_urls" | grep -oE "https?://[^[:space:]\"'\`)|;&>]+")
 [ -z "$urls" ] && emit ask "$ASK"
 while IFS= read -r u; do
   [ -z "$u" ] && continue
