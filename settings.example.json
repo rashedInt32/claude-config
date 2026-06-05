@@ -222,6 +222,11 @@
             "type": "command",
             "command": "bash \"$HOME/.claude/hooks/find-guard.sh\"",
             "statusMessage": "Checking find"
+          },
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/allow-readonly-pipeline.sh\"",
+            "statusMessage": "Checking read-only pipeline"
           }
         ]
       }

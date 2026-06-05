@@ -18,6 +18,7 @@ hooks/
   git-flag-guard.sh           # close the `git -C` / global-flag bypass
   allow-localhost-curl.sh     # auto-allow localhost curl/wget, ask otherwise
   find-guard.sh               # auto-allow read-only find, ask on -delete/-exec/...
+  allow-readonly-pipeline.sh  # auto-allow all-read-only pipelines the built-in matcher balks at
 settings.example.json         # permissions (allow/deny/ask) + hook wiring
 ```
 
@@ -52,7 +53,7 @@ settings.example.json         # permissions (allow/deny/ask) + hook wiring
    startup** — changes to `allow`/`deny`/`ask` only take effect after a restart (or
    reopening via `/hooks`).
 
-## The four hooks
+## The five hooks
 
 ### `ask-on-package-install.sh`
 The package managers (`npm`, `pnpm`, `yarn`, `bun`) are allowlisted so build/run/test
@@ -89,13 +90,32 @@ prompt (and `deny` rules still hard-block the dangerous ones).
 hook makes `find` usable without opening the destructive door:
 - **allow** read-only `find` (`-type`, `-name`, `-ipath`, `-print`, `-prune`, …),
 - **ask** when it sees `-delete`, `-exec`, `-execdir`, `-ok`, `-fprint*`, `-fls`, a file
-  redirect, a `$(…)`, or a dangerous companion command (`rm`, `xargs`, `git`, …).
+  redirect, a `$(…)`, or a write/exec companion command (`rm`, `git push`, `xargs rm`, …).
+
+Read-only companions are allowed: `find … && git log`, `find … | xargs grep` run without a
+prompt, while `find … && git push` and `find … | xargs rm` still ask. Dangerous words inside
+quotes (`-name '*git*'`, `echo "rm -rf"`) no longer trip it — only command-position tokens do.
 
 Why a hook instead of "just use `fd`"? Because a *preference* to use `fd` can't be relied
 on — it doesn't propagate across projects or sessions, and pasted `find` one-liners ignore
 it. A hook in `settings.json` is **global and deterministic**: read-only `find` works
 everywhere, destructive `find` is gated everywhere. (`fd` is still allowlisted and is a
 fine, faster choice when you reach for it.)
+
+### `allow-readonly-pipeline.sh`
+Claude Code's built-in matcher auto-approves a compound command only when it can statically
+decompose it and match every leaf — it gives up on gnarly shells (mixed `&&`/`|`/`;`,
+`2>/dev/null` redirects, `!`-prefixed glob args), so a read-only search like
+`rg -n foo src --glob '!**/node_modules/**' 2>/dev/null | head` prompts even though `rg`,
+`head`, `cd` are each allowlisted. This hook closes that gap:
+- **allow** when *every* segment is a known read-only program (`rg`, `grep`, `cat`, `ls`,
+  `head`, `tail`, `wc`, `sort`, `uniq`, `cut`, `jq`, `diff`, `cd`, `echo`, …) **and** there's
+  no command/process substitution and no output redirect to a real file,
+- **silent** (no opinion) otherwise — the other hooks and normal rules still apply.
+
+Because a hook `allow` bypasses `deny`, the read-only set is strict: it excludes every
+command-runner and in-place writer (`find`, `fd`, `xargs`, `sed`, `awk`, `tee`, `node`, …),
+so a write or arbitrary-exec can never ride along inside an "allowed" pipeline.
 
 ## Permission model at a glance
 
