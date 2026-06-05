@@ -34,7 +34,15 @@ noq=$(printf '%s' "$cmd"  | sed -E "s/'[^']*'//g; s/\"[^\"]*\"//g")
 nosq=$(printf '%s' "$cmd" | sed -E "s/'[^']*'//g")
 
 # (2) dangerous / state-changing word anywhere unquoted -> defends against `curl localhost && rm -rf ~`
-printf '%s' "$noq" | grep -Eq '(^|[^[:alnum:]_])(rm|rmdir|mv|cp|dd|tee|sponge|truncate|ln|install|mkfs|wipefs|chmod|chown|chgrp|sudo|doas|su|ssh|scp|sftp|rsync|nc|ncat|netcat|socat|telnet|kill|pkill|killall|shutdown|reboot|halt|eval|exec|source|crontab|launchctl|systemctl|mount|umount|export|trap|git)([^[:alnum:]_]|$)' && emit ask "$ASK"
+# (git is dual-use; read-only git is handled separately just below).
+printf '%s' "$noq" | grep -Eq '(^|[^[:alnum:]_])(rm|rmdir|mv|cp|dd|tee|sponge|truncate|ln|install|mkfs|wipefs|chmod|chown|chgrp|sudo|doas|su|ssh|scp|sftp|rsync|nc|ncat|netcat|socat|telnet|kill|pkill|killall|shutdown|reboot|halt|eval|exec|source|crontab|launchctl|systemctl|mount|umount|export|trap)([^[:alnum:]_]|$)' && emit ask "$ASK"
+
+# (2a) read-only git (log/diff/status/...) is safe alongside curl; writes
+# (push/commit/reset/...) must still block. Neutralize read-only git, then ask
+# if any `git` token remains.
+gitro='status|log|diff|show|branch|blame|remote|tag|reflog|describe|rev-parse|ls-files|ls-tree|ls-remote|shortlog|fetch|whatchanged|cat-file|for-each-ref|name-rev|merge-base|symbolic-ref|rev-list|grep|var|version|help'
+gitchk=$(printf '%s' "$noq" | sed -E "s/(^|[^[:alnum:]_])git([[:space:]]+(-p|-P|--no-pager|--paginate|--no-optional-locks))*[[:space:]]+($gitro)([^[:alnum:]_]|\$)/\1 GITRO /g")
+printf '%s' "$gitchk" | grep -Eq '(^|[^[:alnum:]_])git([^[:alnum:]_]|$)' && emit ask "$ASK"
 
 # (3) no backticks; every $(...) must be a curl/wget call (substitutions live in double quotes)
 printf '%s' "$nosq" | grep -q '`' && emit ask "$ASK"
