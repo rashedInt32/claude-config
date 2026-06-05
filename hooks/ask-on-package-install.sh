@@ -4,6 +4,9 @@
 # pnpm@version pins, and flags before the subcommand). Errs toward asking — never
 # silently lets a real install through.
 cmd="$(jq -r '.tool_input.command // empty')"
+# strip quoted strings first so a literal mention (e.g. git commit -m "npm install
+# fix", or echo "run npm install") isn't mistaken for a real install.
+cmd=$(printf '%s' "$cmd" | sed -E "s/'[^']*'//g; s/\"[^\"]*\"//g")
 if printf '%s' "$cmd" | grep -Eq '(npm|pnpm|yarn|bun)(@[^[:space:]]+)?[[:space:]]+([^&|;]*[[:space:]])?(install|add|ci|update|upgrade|i)([[:space:]]|$)'; then
   printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"Package install/add detected — confirm before installing dependencies."}}'
 fi

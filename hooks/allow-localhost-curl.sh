@@ -6,42 +6,58 @@
 #   * curl/wget that targets ONLY localhost, with no file writes / dangerous
 #     tokens / non-curl command-substitutions  -> allow (no prompt)
 #   * any other curl/wget                                          -> ask (prompt)
-#   * commands that don't use curl/wget                            -> no opinion
+#   * commands that don't INVOKE curl/wget                         -> no opinion
 # Deny rules still win over this hook's `ask` (e.g. `curl localhost && rm -rf ~`
 # is denied by the rm deny rule). Fail-safe: any doubt yields `ask`, never allow.
+#
+# Engages ONLY when curl/wget is invoked as a command, not when "curl"/"wget"
+# merely appears inside a path, filename, or string (e.g. `cat foo-curl.sh`,
+# `grep curl file`, or `find -name allow-localhost-curl.sh`).
+#
+# Quote handling: word / file-write / redirect / URL checks run against a
+# quote-stripped copy (noq), so a dangerous word or host inside a literal arg
+# (echo label, -H/-w value, grep pattern) can't trip the guard or be mistaken
+# for the target. Command-substitution checks strip ONLY single quotes (nosq),
+# because $(...) and backticks stay live inside double quotes.
 
 cmd="$(jq -r '.tool_input.command // empty')"
 [ -z "$cmd" ] && exit 0
-printf '%s' "$cmd" | grep -Eqw 'curl|wget' || exit 0   # not a curl/wget command
+printf '%s' "$cmd" | grep -Eq '(^|[;&|(])[[:space:]]*(curl|wget)([[:space:]]|$)' || exit 0   # curl/wget only at command position
 
 emit() { printf '%s' "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"$1\",\"permissionDecisionReason\":\"$2\"}}"; exit 0; }
 ASK="curl/wget is not a clean localhost-only probe (non-localhost host, file write, or dangerous command) - confirm before running."
 
-# (2) dangerous / state-changing word anywhere -> defends against `curl localhost && rm -rf ~`
-printf '%s' "$cmd" | grep -Eq '(^|[^[:alnum:]_])(rm|rmdir|mv|cp|dd|tee|sponge|truncate|ln|install|mkfs|wipefs|chmod|chown|chgrp|sudo|doas|su|ssh|scp|sftp|rsync|nc|ncat|netcat|socat|telnet|kill|pkill|killall|shutdown|reboot|halt|eval|exec|source|crontab|launchctl|systemctl|mount|umount|export|trap|git)([^[:alnum:]_]|$)' && emit ask "$ASK"
+# quote-stripped copies: noq drops BOTH quote styles (safe for word/redirect/URL
+# scans — a quoted token is a literal arg, never executed); nosq drops only
+# single quotes (double-quoted $(...) / backticks are still executed).
+noq=$(printf '%s' "$cmd"  | sed -E "s/'[^']*'//g; s/\"[^\"]*\"//g")
+nosq=$(printf '%s' "$cmd" | sed -E "s/'[^']*'//g")
 
-# (3) no backticks; every $(...) must be a curl/wget call
-printf '%s' "$cmd" | grep -q '`' && emit ask "$ASK"
-total_subs=$(printf '%s' "$cmd" | grep -oE '\$\(' | wc -l | tr -d ' ')
-curl_subs=$(printf '%s' "$cmd" | grep -oE '\$\([[:space:]]*(curl|wget)' | wc -l | tr -d ' ')
+# (2) dangerous / state-changing word anywhere unquoted -> defends against `curl localhost && rm -rf ~`
+printf '%s' "$noq" | grep -Eq '(^|[^[:alnum:]_])(rm|rmdir|mv|cp|dd|tee|sponge|truncate|ln|install|mkfs|wipefs|chmod|chown|chgrp|sudo|doas|su|ssh|scp|sftp|rsync|nc|ncat|netcat|socat|telnet|kill|pkill|killall|shutdown|reboot|halt|eval|exec|source|crontab|launchctl|systemctl|mount|umount|export|trap|git)([^[:alnum:]_]|$)' && emit ask "$ASK"
+
+# (3) no backticks; every $(...) must be a curl/wget call (substitutions live in double quotes)
+printf '%s' "$nosq" | grep -q '`' && emit ask "$ASK"
+total_subs=$(printf '%s' "$nosq" | grep -oE '\$\(' | wc -l | tr -d ' ')
+curl_subs=$(printf '%s' "$nosq" | grep -oE '\$\([[:space:]]*(curl|wget)' | wc -l | tr -d ' ')
 [ "$total_subs" -ne "$curl_subs" ] && emit ask "$ASK"
 
 # (4a) curl file-writing flags that aren't /dev/null
-printf '%s' "$cmd" | grep -Eq '(^|[[:space:]])(-O|--remote-name|--remote-header-name|-J|--output-dir|-K|--config|-T|--upload-file)([[:space:]]|=|$)' && emit ask "$ASK"
-for arg in $(printf '%s' "$cmd" | grep -oE '(-o|--output)[[:space:]]+[^[:space:]]+' | sed -E 's/^(-o|--output)[[:space:]]+//'); do
+printf '%s' "$noq" | grep -Eq '(^|[[:space:]])(-O|--remote-name|--remote-header-name|-J|--output-dir|-K|--config|-T|--upload-file)([[:space:]]|=|$)' && emit ask "$ASK"
+for arg in $(printf '%s' "$noq" | grep -oE '(-o|--output)[[:space:]]+[^[:space:]]+' | sed -E 's/^(-o|--output)[[:space:]]+//'); do
   [ "$arg" != "/dev/null" ] && emit ask "$ASK"
 done
 
-# (4b) shell redirection to anything but /dev/null (strip quoted strings first so a
-# literal '>' inside a -w/-d value, e.g. "host -> HTTP", isn't read as a redirect)
-unquoted=$(printf '%s' "$cmd" | sed -E "s/'[^']*'//g; s/\"[^\"]*\"//g")
-sanitized=$(printf '%s' "$unquoted" | sed -E 's/[12]?>>?[[:space:]]*\/dev\/null//g; s/[12]?>&[12]//g; s/&>[[:space:]]*\/dev\/null//g')
+# (4b) shell redirection to anything but /dev/null
+sanitized=$(printf '%s' "$noq" | sed -E 's/[12]?>>?[[:space:]]*\/dev\/null//g; s/[12]?>&[12]//g; s/&>[[:space:]]*\/dev\/null//g')
 printf '%s' "$sanitized" | grep -q '>' && emit ask "$ASK"
 
-# (5) every URL/host target must be a localhost host. Normalize scheme-less
-# loopback authorities (e.g. `localhost:3000/`) to scheme form so they're
-# recognized; bare NON-loopback hosts stay unmatched and fall through to `ask`.
-cmd_urls=$(printf '%s' "$cmd" | sed -E 's#(^|[[:space:]=(])(localhost|127\.0\.0\.1|\[::1\]|::1)#\1http://\2#g')
+# (5) every URL/host target must be a localhost host. Work on the quote-stripped
+# copy (noq) so a flag value like -H "X: localhost" can't be mistaken for the
+# target, then normalize scheme-less loopback authorities (e.g. `localhost:3000/`)
+# to scheme form so they're recognized. Bare non-loopback hosts stay unmatched
+# and fall through to `ask`.
+cmd_urls=$(printf '%s' "$noq" | sed -E 's#(^|[[:space:]=(])(localhost|127\.0\.0\.1|\[::1\]|::1)#\1http://\2#g')
 urls=$(printf '%s' "$cmd_urls" | grep -oE "https?://[^[:space:]\"'\`)|;&>]+")
 [ -z "$urls" ] && emit ask "$ASK"
 while IFS= read -r u; do
