@@ -1,67 +1,71 @@
 #!/usr/bin/env bash
-# PreToolUse(Bash) hook: auto-allow READ-ONLY `find`, ask on destructive find.
+# PreToolUse(Bash) hook: auto-allow READ-ONLY `find`, ask on anything else.
 #
 # `find` is deliberately NOT in the static allowlist because it's dual-use
 # (-delete, -exec rm, -fprintf write files). This hook lets read-only searches
-# run without prompting while still gating the destructive forms. It's global,
-# so it applies to every session/repo — which is the point: a behavioral "use fd"
-# preference doesn't propagate across projects, but a hook in settings.json does.
+# run without prompting while gating the destructive forms. It's global, so it
+# applies to every session/repo.
 #
-#   read-only find (-type/-name/-ipath/-print/-prune/...)  -> allow
+#   read-only find (-type/-name/-ipath/-print/-prune/...) whose only companions
+#   are read-only commands  -> allow
 #   find with -delete/-exec/-execdir/-ok/-okdir/-fprint*/-fls -> ask
-#   find alongside a dangerous command, $(...) sub, or file redirect -> ask
-#   commands that don't invoke find                          -> no opinion
+#   find alongside ANY non-read-only command, a $()/backtick, or a file redirect -> ask
+#   commands that don't invoke find -> no opinion
 # Deny rules still win over this hook's `ask`. Fail-safe: any doubt -> ask.
 #
-# Quote handling: destructive-action / dangerous-word / redirect checks run
-# against a quote-stripped copy (noq), so a dangerous token that's merely a
-# literal argument (echo label, -name/-path pattern, grep string) doesn't trip
-# the guard. Command-substitution checks strip ONLY single quotes (nosq),
-# because $(...) and backticks stay live inside double quotes.
+# Design: a hook `allow` bypasses deny rules, so the companion check is an
+# ALLOWLIST, not a denylist. Every command-position program must be `find`, a
+# known read-only tool, or a read-only git/xargs invocation; an interpreter
+# (`bash -c "rm"`, `python -c ...`) or arbitrary executable (`./x`) — whose
+# payload a word-scan can't see — fails the allowlist and asks. Quote handling:
+# structural checks run on a quote-stripped copy (noq); substitution checks
+# strip only single quotes (nosq), since $()/`` stay live inside double quotes.
 
 cmd="$(jq -r '.tool_input.command // empty')"
 [ -z "$cmd" ] && exit 0
 
-# engage only when `find` is invoked as a command (at command position — not as a
-# substring in a path, nor as an argument like `grep find file`)
+# engage only when find is a command (command position — not a path/arg substring)
 printf '%s' "$cmd" | grep -Eq '(^|[;&|(])[[:space:]]*find([[:space:]]|$)' || exit 0
 
 emit() { printf '%s' "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"$1\",\"permissionDecisionReason\":\"$2\"}}"; exit 0; }
-ASK="find with a destructive action (-delete/-exec/...), a dangerous command, or a file redirect - confirm before running."
+ASK="find with a destructive action (-delete/-exec/...), a non-read-only companion command, a \$()/backtick, or a file redirect - confirm before running."
 
-# quote-stripped copies (see header). noq: both quote styles. nosq: single only.
 noq=$(printf '%s' "$cmd"  | sed -E "s/'[^']*'//g; s/\"[^\"]*\"//g")
 nosq=$(printf '%s' "$cmd" | sed -E "s/'[^']*'//g")
 
 # (1) find's own destructive / file-writing / executing actions
 printf '%s' "$noq" | grep -Eq '(^|[[:space:]])(-delete|-exec|-execdir|-ok|-okdir|-fprintf|-fprint|-fls)([[:space:]]|$)' && emit ask "$ASK"
 
-# (2) defense in depth: a hook `allow` bypasses deny rules, so bail on any
-# dangerous / state-changing word anywhere unquoted (e.g. `find . ; rm -rf ~`).
-# git and xargs are dual-use and handled separately below (read-only forms are safe).
-printf '%s' "$noq" | grep -Eq '(^|[^[:alnum:]_])(rm|rmdir|mv|cp|dd|tee|sponge|truncate|ln|install|mkfs|wipefs|chmod|chown|chgrp|sudo|doas|su|ssh|scp|sftp|rsync|nc|ncat|netcat|socat|telnet|kill|pkill|killall|shutdown|reboot|halt|eval|exec|source|crontab|launchctl|systemctl|mount|umount)([^[:alnum:]_]|$)' && emit ask "$ASK"
-
-# (2a) git is dual-use: read-only subcommands (log/diff/status/...) are safe to run
-# alongside find, but writes (push/commit/reset/...) must still block — a hook
-# `allow` would otherwise bypass their ask/deny rules. Neutralize read-only git
-# invocations, then ask if any `git` token remains. (git with global flags like
-# -C/-c is left to git-flag-guard, which denies writes and allows reads.)
-gitro='status|log|diff|show|branch|blame|remote|tag|reflog|describe|rev-parse|ls-files|ls-tree|ls-remote|shortlog|fetch|whatchanged|cat-file|for-each-ref|name-rev|merge-base|symbolic-ref|rev-list|grep|var|version|help'
-gitchk=$(printf '%s' "$noq" | sed -E "s/(^|[^[:alnum:]_])git([[:space:]]+(-p|-P|--no-pager|--paginate|--no-optional-locks))*[[:space:]]+($gitro)([^[:alnum:]_]|\$)/\1 GITRO /g")
-printf '%s' "$gitchk" | grep -Eq '(^|[^[:alnum:]_])git([^[:alnum:]_]|$)' && emit ask "$ASK"
-
-# (2b) xargs is dual-use: safe only when its child command is read-only (the
-# common `find ... | xargs grep`). Neutralize those, then ask if any xargs remains.
-xro='grep|egrep|fgrep|rg|cat|wc|head|tail|ls|file|stat|echo|sort|uniq|cut|tr|basename|dirname|realpath|md5sum|shasum|sha256sum|cksum|column|nl|tac|rev'
-xchk=$(printf '%s' "$noq" | sed -E "s/(^|[^[:alnum:]_])xargs([[:space:]]+-[^[:space:]]+)*[[:space:]]+($xro)([^[:alnum:]_]|\$)/\1 XARGSRO /g")
-printf '%s' "$xchk" | grep -Eq '(^|[^[:alnum:]_])xargs([^[:alnum:]_]|$)' && emit ask "$ASK"
-
-# (3) backticks or command substitution (live inside double quotes) -> can't vet -> ask
+# (2) backticks or command substitution (live inside double quotes) -> can't vet -> ask
 printf '%s' "$nosq" | grep -q '`' && emit ask "$ASK"
 printf '%s' "$nosq" | grep -q '\$(' && emit ask "$ASK"
 
-# (4) shell redirection to anything but /dev/null
-sanitized=$(printf '%s' "$noq" | sed -E 's/[12]?>>?[[:space:]]*\/dev\/null//g; s/[12]?>&[12]//g; s/&>[[:space:]]*\/dev\/null//g')
+# (3) output redirection to anything but /dev/null -> ask
+sanitized=$(printf '%s' "$noq" | sed -E 's/[12]?>>?[[:space:]]*\/dev\/null//g; s/[0-9]*>&[0-9-]+//g; s/&>[[:space:]]*\/dev\/null//g')
 printf '%s' "$sanitized" | grep -q '>' && emit ask "$ASK"
 
-emit allow "read-only find (no destructive actions, dangerous commands, or file writes)."
+# (4) companion allowlist: neutralize read-only git/xargs, then require every
+# command-position program to be find / a read-only tool / GITRO / XARGSRO.
+gitro='status|log|diff|show|branch|blame|remote|tag|reflog|describe|rev-parse|ls-files|ls-tree|ls-remote|shortlog|fetch|whatchanged|cat-file|for-each-ref|name-rev|merge-base|symbolic-ref|rev-list|grep|var|version|help'
+xro='grep|egrep|fgrep|rg|cat|wc|head|tail|ls|file|stat|echo|cut|tr|nl|tac|rev|comm|cmp|diff|hexdump|od|strings|md5sum|shasum|sha256sum|cksum|column|basename|dirname|realpath|jq'
+norm=$(printf '%s' "$noq" \
+  | sed -E "s/(^|[^[:alnum:]_])git([[:space:]]+(-p|-P|--no-pager|--paginate|--no-optional-locks))*[[:space:]]+($gitro)([^[:alnum:]_]|\$)/\1 GITRO /g" \
+  | sed -E "s/(^|[^[:alnum:]_])xargs([[:space:]]+-[^[:space:]]+)*[[:space:]]+($xro)([^[:alnum:]_]|\$)/\1 XARGSRO /g")
+forsplit=$(printf '%s' "$norm" | sed -E 's/[12]?>>?[[:space:]]*\/dev\/null//g; s/[0-9]*>&[0-9-]+//g; s/&>[[:space:]]*\/dev\/null//g; s/[0-9]*<[[:space:]]*[^[:space:];&|]+//g' | tr -d '(){}')
+roset=" basename cat cd cksum column comm cmp cut date df diff dirname du echo egrep false fgrep file grep head hexdump jq ls md5sum nl od printenv printf pwd readlink realpath rev rg seq sha256sum shasum sleep stat strings tac tail test tr true type wc which "
+safe="${roset}find GITRO XARGSRO "
+while IFS= read -r seg; do
+  seg=$(printf '%s' "$seg" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
+  [ -z "$seg" ] && continue
+  prog=${seg%%[[:space:]]*}
+  prog=${prog##*/}
+  case "$prog" in
+    *=*) emit ask "$ASK" ;;          # VAR=val prefix (e.g. LD_PRELOAD=...) -> ask
+  esac
+  case "$safe" in
+    *" $prog "*) ;;                  # read-only companion, ok
+    *) emit ask "$ASK" ;;            # interpreter / unknown executable / writer -> ask
+  esac
+done <<< "$(printf '%s' "$forsplit" | awk '{ gsub(/[;&|]/, "\n"); print }')"
+
+emit allow "read-only find with only read-only companion commands."

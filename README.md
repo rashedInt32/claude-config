@@ -76,8 +76,9 @@ Tokenizes without `eval`/command-substitution, so the guard itself can't be inje
 ### `allow-localhost-curl.sh`
 `curl`/`wget` are deliberately **not** in the static `ask` list (an explicit `ask` rule
 overrides a hook's `allow`). This hook is their sole authority:
-- **allow** when every `http(s)` URL is localhost / `127.0.0.1` / `::1` **and** there are
-  no file writes, dangerous tokens, or non-curl command substitutions,
+- **allow** when every `http(s)` URL is localhost / `127.0.0.1` / `::1`, there are no file
+  writes or non-curl command substitutions, **and** every companion command is read-only
+  (same allowlist as find-guard — so `curl localhost && bash -c "…"` asks),
 - **ask** for anything else.
 
 So localhost health-checks and port probes run silently, while outbound curl, file
@@ -90,11 +91,15 @@ prompt (and `deny` rules still hard-block the dangerous ones).
 hook makes `find` usable without opening the destructive door:
 - **allow** read-only `find` (`-type`, `-name`, `-ipath`, `-print`, `-prune`, …),
 - **ask** when it sees `-delete`, `-exec`, `-execdir`, `-ok`, `-fprint*`, `-fls`, a file
-  redirect, a `$(…)`, or a write/exec companion command (`rm`, `git push`, `xargs rm`, …).
+  redirect, a `$(…)`, or **any companion command that isn't provably read-only**.
 
-Read-only companions are allowed: `find … && git log`, `find … | xargs grep` run without a
-prompt, while `find … && git push` and `find … | xargs rm` still ask. Dangerous words inside
-quotes (`-name '*git*'`, `echo "rm -rf"`) no longer trip it — only command-position tokens do.
+The companion check is an **allowlist, not a denylist** — every command-position program must be
+`find`, a read-only tool (`cat`/`grep`/`head`/…), or a read-only `git`/`xargs` invocation.
+So `find … && git log` and `find … | xargs grep` run without a prompt, while `find … && git push`,
+`find … | xargs rm`, **and `find … && bash -c "…"` / `… && ./script.sh`** all ask — an
+interpreter or arbitrary executable can hide a destructive payload a word-scan can't see, so it
+never rides along inside an "allowed" find. Dangerous words inside quotes (`-name '*git*'`,
+`echo "rm -rf"`) and inside paths don't trip it — only real command-position programs do.
 
 Why a hook instead of "just use `fd`"? Because a *preference* to use `fd` can't be relied
 on — it doesn't propagate across projects or sessions, and pasted `find` one-liners ignore

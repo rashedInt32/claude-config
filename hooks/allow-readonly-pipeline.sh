@@ -39,8 +39,10 @@ printf '%s' "$red" | grep -q '>' && exit 0
 forsplit=$(printf '%s' "$noq" | sed -E 's/[12]?>>?[[:space:]]*\/dev\/null//g; s/[0-9]*>&[0-9-]+//g; s/&>[[:space:]]*\/dev\/null//g; s/[0-9]*<[[:space:]]*[^[:space:];&|]+//g' | tr -d '(){}')
 progs=$(printf '%s' "$forsplit" | awk '{ gsub(/[;&|]/, "\n"); print }')
 
-# strict read-only program set (stdout-only; none can run a command or write a file via a normal flag)
-roset=" base64 basename cat cd cksum column comm cmp cut date df diff dirname du echo egrep false fgrep file grep head hexdump jq ls md5sum nl od printenv printf pwd readlink realpath rev rg seq sha256sum shasum sort stat strings tac tail test tr tree true type uniq wc which xxd "
+# strict read-only program set (stdout-only; none can run a command or write a
+# file). Deliberately EXCLUDES tools that can write via a flag/positional arg:
+# sort (-o), uniq (IN OUT), xxd (IN OUT), tree (-o), base64 (-o on macOS).
+roset=" basename cat cd cksum column comm cmp cut date df diff dirname du echo egrep false fgrep file grep head hexdump jq ls md5sum nl od printenv printf pwd readlink realpath rev rg seq sha256sum shasum sleep stat strings tac tail test tr true type wc which "
 
 found=0
 while IFS= read -r seg; do
