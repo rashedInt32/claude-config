@@ -14,6 +14,7 @@ in `hooks/` that close gaps a static allowlist can't.
 
 ```
 hooks/
+  deny-secret-access.sh       # block Bash access to .env / keys / credential stores
   ask-on-package-install.sh   # always confirm npm/pnpm/yarn/bun installs
   git-flag-guard.sh           # close the `git -C` / global-flag bypass
   allow-localhost-curl.sh     # auto-allow localhost curl/wget, ask otherwise
@@ -53,7 +54,24 @@ settings.example.json         # permissions (allow/deny/ask) + hook wiring
    startup** — changes to `allow`/`deny`/`ask` only take effect after a restart (or
    reopening via `/hooks`).
 
-## The five hooks
+## The six hooks
+
+### `deny-secret-access.sh`
+The `deny` rules for secrets (`Read(.env)`, `Read(~/.ssh/**)`, `Read(//**/*.pem)`, …) are scoped
+to the **Read/Edit/Write tools** — Bash bypasses them, and `cat`/`grep`/`rg`/`cp` are allowlisted
+with `:*`, so `cat .env` or `cat ~/.ssh/id_rsa` would read secrets straight to stdout. This hook
+extends the same protection to Bash: any command referencing a secret path (`.env`, `id_rsa`/
+`id_ed25519`, `*.pem`/`*.key`/`*.p12`, `.aws`/`.ssh`/`.gnupg`/`.kube`/gcloud dirs, `.netrc`,
+`.git-credentials`, `.docker/config.json`, `service-account*.json`, `secrets/`, `*.secret`) is
+**denied** (deny beats every allow, including the other hooks).
+
+It scans a quote-stripped copy, so real paths (`cat .env`, `cp ~/.ssh/id_rsa /tmp`) are blocked
+while prose (`git commit -m "update .env.example"`) is not. Config templates
+(`.env.example`/`.sample`/`.template`/`.dist`/`.defaults`/`.schema`) are exempt. Trade-off: this is
+deliberately broad — `ls ~/.ssh` and `chmod 600 key.pem` are blocked too. Read such a file with
+the Read tool (governed by your `Read(...)` rules) or run it yourself if you truly need it.
+
+
 
 ### `ask-on-package-install.sh`
 The package managers (`npm`, `pnpm`, `yarn`, `bun`) are allowlisted so build/run/test
@@ -128,8 +146,9 @@ so a write or arbitrary-exec can never ride along inside an "allowed" pipeline.
   (`node/npm/pnpm/bun` for build/run — installs are gated by the hook above).
 - **ask** — `git push`/`--force`, `git reset --hard`, `rebase`, `filter-branch`,
   `clean -f/-fd`. (`curl`/`wget` are handled by the hook, not listed here.)
-- **deny** — secrets (`.env`, SSH/GPG/cloud creds), `sudo`/`su`, `--no-verify` commits,
-  `push --mirror`, and catastrophic `rm -rf` / `mkfs` / `dd` / `shutdown` forms.
+- **deny** — secrets (`.env`, SSH/GPG/cloud creds) via the Read/Edit/Write tools **and via Bash**
+  (the `deny-secret-access.sh` hook), `sudo`/`su`, `--no-verify` commits, `push --mirror`, and
+  catastrophic `rm -rf` / `mkfs` / `dd` / `shutdown` forms.
 
 ## Caveats
 

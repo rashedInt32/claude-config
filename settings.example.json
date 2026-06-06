@@ -205,6 +205,11 @@
         "hooks": [
           {
             "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/deny-secret-access.sh\"",
+            "statusMessage": "Checking for secret access"
+          },
+          {
+            "type": "command",
             "command": "bash \"$HOME/.claude/hooks/ask-on-package-install.sh\"",
             "statusMessage": "Checking for package install"
           },
