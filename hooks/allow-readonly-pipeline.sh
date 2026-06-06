@@ -50,11 +50,24 @@ found=0
 while IFS= read -r seg; do
   seg=$(printf '%s' "$seg" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
   [ -z "$seg" ] && continue
+  # Strip leading `VAR=value` assignment tokens. A plain/path assignment like
+  # `HP=node_modules/...` is harmless data, but env vars that change which
+  # binary runs or how the shell splits words (PATH, LD_*, DYLD_*, IFS,
+  # BASH_ENV, ...) could turn an allowlisted name into someone else's code, so
+  # those stay silent and fall through to the normal ask rules.
+  while printf '%s' "$seg" | grep -Eq '^[A-Za-z_][A-Za-z0-9_]*='; do
+    name=${seg%%=*}
+    case "$name" in
+      PATH|IFS|ENV|BASH_ENV|BASHOPTS|SHELLOPTS|CDPATH|GLOBIGNORE|FIGNORE|FPATH|PS4|PROMPT_COMMAND|HISTFILE|LD_*|DYLD_*|BASH_*)
+        exit 0 ;;
+    esac
+    rest=${seg#*[[:space:]]}                     # text after first whitespace
+    [ "$rest" = "$seg" ] && { seg=""; break; }   # pure assignment, nothing follows
+    seg=$(printf '%s' "$rest" | sed -E 's/^[[:space:]]+//')
+  done
+  [ -z "$seg" ] && continue        # segment was only benign assignment(s)
   prog=${seg%%[[:space:]]*}
   prog=${prog##*/}
-  case "$prog" in
-    *=*) exit 0 ;;                 # VAR=val prefix (e.g. LD_PRELOAD=...) -> don't vouch
-  esac
   case "$roset" in
     *" $prog "*) found=1 ;;
     *) exit 0 ;;                   # an unknown / non-read-only program -> stay silent
