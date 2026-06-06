@@ -47,12 +47,12 @@ printf '%s' "$sanitized" | grep -q '>' && emit ask "$ASK"
 # (4) companion allowlist: neutralize read-only git/xargs, then require every
 # command-position program to be find / a read-only tool / GITRO / XARGSRO.
 gitro='status|log|diff|show|branch|blame|remote|tag|reflog|describe|rev-parse|ls-files|ls-tree|ls-remote|shortlog|fetch|whatchanged|cat-file|for-each-ref|name-rev|merge-base|symbolic-ref|rev-list|grep|var|version|help'
-xro='grep|egrep|fgrep|rg|cat|wc|head|tail|ls|file|stat|echo|cut|tr|nl|tac|rev|comm|cmp|diff|hexdump|od|strings|md5sum|shasum|sha256sum|cksum|column|basename|dirname|realpath|jq'
+xro='grep|egrep|fgrep|rg|cat|wc|head|tail|ls|file|stat|echo|cut|tr|nl|tac|rev|comm|cmp|diff|hexdump|od|strings|md5sum|shasum|sha256sum|cksum|column|basename|dirname|realpath|jq|sort|uniq'
 norm=$(printf '%s' "$noq" \
   | sed -E "s/(^|[^[:alnum:]_])git([[:space:]]+(-p|-P|--no-pager|--paginate|--no-optional-locks))*[[:space:]]+($gitro)([^[:alnum:]_]|\$)/\1 GITRO /g" \
   | sed -E "s/(^|[^[:alnum:]_])xargs([[:space:]]+-[^[:space:]]+)*[[:space:]]+($xro)([^[:alnum:]_]|\$)/\1 XARGSRO /g")
 forsplit=$(printf '%s' "$norm" | sed -E 's/[12]?>>?[[:space:]]*\/dev\/null//g; s/[0-9]*>&[0-9-]+//g; s/&>[[:space:]]*\/dev\/null//g; s/[0-9]*<[[:space:]]*[^[:space:];&|]+//g' | tr -d '(){}')
-roset=" basename cat cd cksum column comm cmp cut date df diff dirname du echo egrep false fgrep file grep head hexdump jq ls md5sum nl od printenv printf pwd readlink realpath rev rg seq sha256sum shasum sleep stat strings tac tail test tr true type wc which "
+roset=" base64 basename cat cd cksum column comm cmp cut date df diff dirname du echo egrep false fgrep file grep head hexdump jq ls md5sum nl od printenv printf pwd readlink realpath rev rg seq sha256sum shasum sleep sort stat strings tac tail test tr tree true type uniq wc which xxd "
 safe="${roset}find GITRO XARGSRO "
 while IFS= read -r seg; do
   seg=$(printf '%s' "$seg" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
