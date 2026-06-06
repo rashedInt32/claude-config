@@ -60,16 +60,19 @@ settings.example.json         # permissions (allow/deny/ask) + hook wiring
 The `deny` rules for secrets (`Read(.env)`, `Read(~/.ssh/**)`, `Read(//**/*.pem)`, …) are scoped
 to the **Read/Edit/Write tools** — Bash bypasses them, and `cat`/`grep`/`rg`/`cp` are allowlisted
 with `:*`, so `cat .env` or `cat ~/.ssh/id_rsa` would read secrets straight to stdout. This hook
-extends the same protection to Bash: any command referencing a secret path (`.env`, `id_rsa`/
+extends the same protection to Bash. When a command references a secret path (`.env`, `id_rsa`/
 `id_ed25519`, `*.pem`/`*.key`/`*.p12`, `.aws`/`.ssh`/`.gnupg`/`.kube`/gcloud dirs, `.netrc`,
-`.git-credentials`, `.docker/config.json`, `service-account*.json`, `secrets/`, `*.secret`) is
-**denied** (deny beats every allow, including the other hooks).
+`.git-credentials`, `.docker/config.json`, `service-account*.json`, `secrets/`, `*.secret`) it is
+**denied if it would expose the contents** — a read/copy/transmit/interpret verb (`cat`, `grep`,
+`rg`, `head`, `cp`, `tar`, `curl`, `base64`, `python`, …) or a redirect that **writes into** a
+secret path (`echo pwn >> ~/.ssh/authorized_keys`). A `deny` beats every allow, including the
+other hooks.
 
-It scans a quote-stripped copy, so real paths (`cat .env`, `cp ~/.ssh/id_rsa /tmp`) are blocked
-while prose (`git commit -m "update .env.example"`) is not. Config templates
-(`.env.example`/`.sample`/`.template`/`.dist`/`.defaults`/`.schema`) are exempt. Trade-off: this is
-deliberately broad — `ls ~/.ssh` and `chmod 600 key.pem` are blocked too. Read such a file with
-the Read tool (governed by your `Read(...)` rules) or run it yourself if you truly need it.
+Metadata-only ops are **allowed**, since they expose nothing: `ls`/`stat`/`file`/`test`/`find` and
+`chmod`/`chown` on a key, plus `git` (so commit messages mentioning `.env` don't trip it). It scans
+a quote-stripped copy so real paths are caught but prose isn't, and config templates
+(`.env.example`/`.sample`/`.template`/`.dist`/`.defaults`/`.schema`) are exempt. Fail-safe: it only
+ever denies or stays silent.
 
 
 
