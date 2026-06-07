@@ -13,6 +13,12 @@
 # redirect to a real file — it emits `allow`. Otherwise it stays silent (no
 # opinion), so the other hooks and the normal permission rules still apply.
 #
+# Read-only LOOPS/CONDITIONALS are covered too: shell keywords (for/while/until/
+# if/do/then/else/done/fi/...) are peeled off each segment and the command they
+# wrap is validated against the same read-only set — so `for f in *.d.ts; do grep
+# x "$f"; done` allows, but `for f in *; do rm "$f"; done` still bails (rm isn't
+# read-only). A `for VAR in WORDS` clause executes nothing, so it's skipped.
+#
 # Safety: a hook `allow` bypasses deny rules, so the allowed program set is
 # strict — only tools that read/transform to stdout and can neither run another
 # command nor be coerced into writing (no find/xargs/sed/awk/tee/node/...).
@@ -44,28 +50,45 @@ progs=$(printf '%s' "$forsplit" | awk '{ gsub(/[;&|]/, "\n"); print }')
 # CAN write a file via a flag/positional arg, but that's fine here: writing to a
 # SECRET path is blocked by deny-secret-access (they aren't metadata-safe there),
 # and writing to a non-secret path is already permitted by the static allowlist.
-roset=" base64 basename cat cd cksum column comm cmp cut date df diff dirname du echo egrep false fgrep file grep head hexdump jq ls md5sum nl od printenv printf pwd readlink realpath rev rg seq sha256sum shasum sleep sort stat strings tac tail test tr tree true type uniq wc which xxd "
+roset=" base64 basename cat cd cksum column comm cmp cut date df diff dirname du echo egrep false fgrep file grep head hexdump jq ls md5sum nl od printenv printf pwd readlink realpath rev rg seq sha256sum shasum sleep sort stat strings tac tail test [ [[ : tr tree true type uniq wc which xxd "
 
 found=0
 while IFS= read -r seg; do
   seg=$(printf '%s' "$seg" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
   [ -z "$seg" ] && continue
-  # Strip leading `VAR=value` assignment tokens. A plain/path assignment like
-  # `HP=node_modules/...` is harmless data, but env vars that change which
-  # binary runs or how the shell splits words (PATH, LD_*, DYLD_*, IFS,
-  # BASH_ENV, ...) could turn an allowlisted name into someone else's code, so
-  # those stay silent and fall through to the normal ask rules.
-  while printf '%s' "$seg" | grep -Eq '^[A-Za-z_][A-Za-z0-9_]*='; do
-    name=${seg%%=*}
-    case "$name" in
-      PATH|IFS|ENV|BASH_ENV|BASHOPTS|SHELLOPTS|CDPATH|GLOBIGNORE|FIGNORE|FPATH|PS4|PROMPT_COMMAND|HISTFILE|LD_*|DYLD_*|BASH_*)
-        exit 0 ;;
+  # Peel leading shell keywords and benign assignments off the segment until we
+  # reach the actual command (or nothing left). This lets read-only LOOPS and
+  # CONDITIONALS be vouched for: a `for VAR in WORDS` clause and bare
+  # terminators (done/fi/esac) execute nothing; do/then/else/while/until/if/elif
+  # merely PRECEDE a command. Whatever command remains is still validated against
+  # the read-only set below, so a non-read-only body (e.g. `do rm "$f"`, a `while
+  # curl ...` condition) still bails to silence. Benign `VAR=value` assignments
+  # are peeled too, but env vars that change which binary runs or how words split
+  # (PATH, LD_*, DYLD_*, IFS, BASH_ENV, ...) make us stay silent.
+  while [ -n "$seg" ]; do
+    first=${seg%%[[:space:]]*}
+    case "$first" in
+      for|done|fi|esac|in)              # this segment executes no command
+        seg=""; break ;;
+      do|then|else|while|until|if|elif) # keyword precedes a command -> peel it
+        rest=${seg#*[[:space:]]}
+        [ "$rest" = "$seg" ] && { seg=""; break; }   # lone keyword
+        seg=$(printf '%s' "$rest" | sed -E 's/^[[:space:]]+//'); continue ;;
     esac
-    rest=${seg#*[[:space:]]}                     # text after first whitespace
-    [ "$rest" = "$seg" ] && { seg=""; break; }   # pure assignment, nothing follows
-    seg=$(printf '%s' "$rest" | sed -E 's/^[[:space:]]+//')
+    case "$first" in
+      [A-Za-z_]*=*)                     # benign VAR=value assignment prefix
+        name=${first%%=*}
+        case "$name" in
+          PATH|IFS|ENV|BASH_ENV|BASHOPTS|SHELLOPTS|CDPATH|GLOBIGNORE|FIGNORE|FPATH|PS4|PROMPT_COMMAND|HISTFILE|LD_*|DYLD_*|BASH_*)
+            exit 0 ;;
+        esac
+        rest=${seg#*[[:space:]]}
+        [ "$rest" = "$seg" ] && { seg=""; break; } # pure assignment, nothing follows
+        seg=$(printf '%s' "$rest" | sed -E 's/^[[:space:]]+//'); continue ;;
+    esac
+    break                              # reached a real command token
   done
-  [ -z "$seg" ] && continue        # segment was only benign assignment(s)
+  [ -z "$seg" ] && continue        # segment was only keywords / benign assignments
   prog=${seg%%[[:space:]]*}
   prog=${prog##*/}
   case "$roset" in
