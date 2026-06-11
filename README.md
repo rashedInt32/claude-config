@@ -112,7 +112,11 @@ prompt (and `deny` rules still hard-block the dangerous ones).
 hook makes `find` usable without opening the destructive door:
 - **allow** read-only `find` (`-type`, `-name`, `-ipath`, `-print`, `-prune`, …),
 - **ask** when it sees `-delete`, `-exec`, `-execdir`, `-ok`, `-fprint*`, `-fls`, a file
-  redirect, a `$(…)`, or **any companion command that isn't provably read-only**.
+  redirect, a backtick, or **any companion command that isn't provably read-only**.
+
+A `$(…)` is **deferred** to `allow-readonly-pipeline` (which vouches the read-only
+`VAR=$(find …)` form), so `f=$(find . -name X | head -1); grep -n foo "$f"` no longer prompts.
+A *destructive* find inside `$()` is still caught here by the `-delete`/`-exec` check above.
 
 The companion check is an **allowlist, not a denylist** — every command-position program must be
 `find`, a read-only tool (`cat`/`grep`/`head`/…), or a read-only `git`/`xargs` invocation.
@@ -136,8 +140,18 @@ decompose it and match every leaf — it gives up on gnarly shells (mixed `&&`/`
 `head`, `cd` are each allowlisted. This hook closes that gap:
 - **allow** when *every* segment is a known read-only program (`rg`, `grep`, `cat`, `ls`,
   `head`, `tail`, `wc`, `sort`, `uniq`, `cut`, `jq`, `diff`, `cd`, `echo`, …) **and** there's
-  no command/process substitution and no output redirect to a real file,
+  no output redirect to a real file,
 - **silent** (no opinion) otherwise — the other hooks and normal rules still apply.
+
+**Command substitution** is vouched in one narrow, safe shape: an assignment value,
+`VAR=$(…)` (or `VAR="$(…)"`), where the inner command is itself fully read-only — so
+`f=$(find . -name X | head -1); grep -n foo "$f"` auto-allows. The output lands in a
+variable, never at command position, and a later `$var` used *as* a command isn't read-only
+so it bails. Any other `$(…)` — at command position (`$(printf rm) file`), as a bare
+argument (`echo $(date)`), nested, or arithmetic — keeps the hook silent. Backticks and
+process substitution always bail. (`find-guard` defers its `$(…)` ask to this hook, so a
+read-only `VAR=$(find …)` no longer prompts; a destructive find inside `$()` is still caught
+by `find-guard`'s `-delete`/`-exec` check.)
 
 It also vouches **read-only git** (`status`, `log`, `diff`, `show`, `branch`, `blame`,
 `stash list`, …), which is what defeats Claude Code's built-in *"changes directory before

@@ -36,9 +36,12 @@ nosq=$(printf '%s' "$cmd" | sed -E "s/'[^']*'//g")
 # (1) find's own destructive / file-writing / executing actions
 printf '%s' "$noq" | grep -Eq '(^|[[:space:]])(-delete|-exec|-execdir|-ok|-okdir|-fprintf|-fprint|-fls)([[:space:]]|$)' && emit ask "$ASK"
 
-# (2) backticks or command substitution (live inside double quotes) -> can't vet -> ask
+# (2) backticks -> can't vet -> ask. Command substitution $(...) is deferred to
+# allow-readonly-pipeline, which vouches read-only `VAR=$(find ...)` forms and
+# stays silent otherwise; a destructive find inside $() is already caught by the
+# -delete/-exec check in (1) above, so deferring here can't wave a write through.
 printf '%s' "$nosq" | grep -q '`' && emit ask "$ASK"
-printf '%s' "$nosq" | grep -q '\$(' && emit ask "$ASK"
+printf '%s' "$nosq" | grep -q '\$(' && exit 0
 
 # (3) output redirection to anything but /dev/null -> ask
 sanitized=$(printf '%s' "$noq" | sed -E 's/[12]?>>?[[:space:]]*\/dev\/null//g; s/[0-9]*>&[0-9-]+//g; s/&>[[:space:]]*\/dev\/null//g')

@@ -53,11 +53,30 @@ cmd="$(jq -r '.tool_input.command // empty')"
 
 # nosq: strip single-quoted content only (double-quoted $()/`` stay live).
 nosq=$(printf '%s' "$cmd" | sed -E "s/'[^']*'//g")
-# live command/process substitution anywhere -> can't vouch -> stay silent.
-printf '%s' "$nosq" | grep -Eq '\$\(|`|<\(|>\(' && exit 0
+# backticks / process substitution: can't vouch -> stay silent.
+printf '%s' "$nosq" | grep -Eq '`|<\(|>\(' && exit 0
 
-# noq: strip both quote styles for the structural (redirect/split) checks.
-noq=$(printf '%s' "$cmd" | sed -E "s/'[^']*'//g; s/\"[^\"]*\"//g")
+# Command substitution $(...): vouch ONLY when every occurrence is an ASSIGNMENT
+# value -- VAR=$(...) or VAR="$(...)". There the output lands in a variable
+# (never executed at command position); a later `$var` used as a command isn't in
+# the read-only set, so it bails anyway. Each inner command is then validated as
+# an ordinary read-only segment (appended to nosq below). Any $(...) that is NOT
+# an assignment value -- command position, a bare argument, nested, arithmetic
+# $(( -- keeps us silent. This makes `f=$(find . | head -1); grep x "$f"` vouch
+# while `$(printf rm) file` / `"$(rm -rf x)" f` / `f=$(rm x)` do not.
+if printf '%s' "$nosq" | grep -q '\$('; then
+  probe=$(printf '%s' "$nosq" | sed -E 's/="?\$\(/=@OK(/g')
+  printf '%s' "$probe" | grep -q '\$(' && exit 0          # a $( outside assignment value
+  inners=$(printf '%s' "$nosq" | grep -oE '\$\([^)]*\)' | sed -E 's/^\$\(//; s/\)$//')
+  [ -z "$inners" ] && exit 0                                # nothing extractable -> bail
+  outer=$(printf '%s' "$nosq" | sed -E 's/"?\$\([^)]*\)"?/X/g')
+  nosq="$outer ; $(printf '%s' "$inners" | tr '\n' ';')"   # outer + each inner as segments
+fi
+
+# noq: strip double quotes too for the structural (redirect/split) checks.
+# (plain "[^"]*" — NOT \" — so a backslash inside a double-quoted arg, e.g. a
+# grep pattern with \|, doesn't poison the class on BSD sed.)
+noq=$(printf '%s' "$nosq" | sed -E 's/"[^"]*"//g')
 
 # output redirection to anything but /dev/null -> stay silent. (input '<' from a
 # file is read-only and fine; process subst was already rejected above.)
@@ -173,6 +192,15 @@ while IFS= read -r seg; do
       found=1
       continue ;;
   esac
+
+  if [ "$prog" = "find" ]; then
+    # read-only find: reject destructive / exec / file-writing actions (mirrors
+    # find-guard). Used mainly to validate `find ... | head` inside a vouched
+    # VAR=$(...) substitution, but applies anywhere find appears in the sweep.
+    printf '%s' "$seg" | grep -Eq '(^|[[:space:]])(-delete|-exec|-execdir|-ok|-okdir|-fprint|-fprintf|-fls)([[:space:]]|$)' && exit 0
+    found=1
+    continue
+  fi
 
   if [ "$prog" = "cd" ]; then
     read -ra t <<< "$seg"
