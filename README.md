@@ -1,13 +1,13 @@
 # claude-config
 
 A curated [Claude Code](https://docs.claude.com/en/docs/claude-code) permission setup
-plus seven safety hooks. The guiding principle:
+plus six safety hooks. The guiding principle:
 
 > **Read freely, gate on write.** Investigation/read commands run without prompting;
 > anything that changes state (writes, pushes, history rewrites, installs, deletes)
 > still asks.
 
-The real value is `settings.example.json` (the permission model) and the seven hooks
+The real value is `settings.example.json` (the permission model) and the six hooks
 in `hooks/` that close gaps a static allowlist can't.
 
 ## What's inside
@@ -19,8 +19,7 @@ hooks/
   git-flag-guard.sh           # close the `git -C` / global-flag bypass
   allow-localhost-curl.sh     # auto-allow localhost curl/wget, ask otherwise
   find-guard.sh               # auto-allow read-only find, ask on -delete/-exec/...
-  allow-readonly-pipeline.sh  # auto-allow all-read-only pipelines (incl. read-only git) the built-in matcher balks at
-  nudge-sed-awk-reads.sh      # ask + nudge to grep/Read when sed/awk is used only to read
+  allow-readonly-pipeline.sh  # auto-allow all-read-only pipelines (incl. read-only git + sed/awk) the built-in matcher balks at
 settings.example.json         # permissions (allow/deny/ask) + hook wiring
 ```
 
@@ -55,7 +54,7 @@ settings.example.json         # permissions (allow/deny/ask) + hook wiring
    startup** — changes to `allow`/`deny`/`ask` only take effect after a restart (or
    reopening via `/hooks`).
 
-## The seven hooks
+## The six hooks
 
 ### `deny-secret-access.sh`
 The `deny` rules for secrets (`Read(.env)`, `Read(~/.ssh/**)`, `Read(//**/*.pem)`, …) are scoped
@@ -151,28 +150,20 @@ subcommand (that's `git-flag-guard`'s job) or an exec/write flag after it
 `cd` is present — requires every `cd` target to stay inside a trusted root (no climbing out
 via `..`), so a malicious sibling repo's config can't ride along.
 
+It also vouches **read-only `sed`/`awk`** as companions, so a sweep like
+`cd repo && grep -n serve f.ts && sed -n '/A/,/B/p' f.ts | head` runs without a prompt —
+honoring *read freely*. `sed`/`awk` can write (`-i`, the `w` command, `print > file`) or
+execute (`sed e`, `awk system()`), so the hook gates exactly those: it rejects the
+in-place / script-file flags (`-i`/`--in-place`/`-f`/`--file`, `gawk -i inplace`) per segment,
+and scans the quoted script for write/exec constructs — `awk system()`/`getline`/`print … >`/
+`… | cmd`/`>>`, and `sed` `w`/`W`/`r`/`R`/`e` commands and `s///w`/`s///e` flags. Any of those,
+or a shell redirect, drops it back to a normal prompt. This is footgun-prevention, not a
+sandbox (the rest of the allowlist already runs arbitrary code via `node`/`npm`/`make`), and
+`deny-secret-access` — which runs first — still blocks `sed`/`awk` on secret paths.
+
 Because a hook `allow` bypasses `deny`, the read-only set is otherwise strict: it excludes every
-command-runner and in-place writer (`find`, `fd`, `xargs`, `sed`, `awk`, `tee`, `node`, …),
-so a write or arbitrary-exec can never ride along inside an "allowed" pipeline.
-
-### `nudge-sed-awk-reads.sh`
-`sed`/`awk` are allowlisted (so real edits/data tasks work) but deliberately **excluded** from
-`allow-readonly-pipeline.sh`'s read-only set — they can write (`-i`, the `w` command,
-`print > file`) or execute (`sed e`, `awk system()`), and those hide inside the script string
-where a word-scan can't catch them. The side effect: a read-only sweep that uses `sed`/`awk`
-*only* to slice lines can't be auto-vouched, so it falls to the built-in "cd + write / path
-resolution bypass" prompt — a silent, easy-to-repeat slip. This hook turns that into a visible,
-actionable **ask**:
-- **ask** — with a reason naming the prompt-free alternatives (`grep -n` / `-A`/`-B`/`-C`,
-  `cut -f`, `tail -n +N | head -M`, the Read tool) — when `sed`/`awk` is used purely as a reader
-  inside an otherwise all-read-only sweep,
-- **silent** (no opinion) otherwise.
-
-It fires only when there's no in-place edit (`-i`/`--in-place`/`gawk -i inplace`), no write
-redirect, and no command substitution, and every *other* program is read-only — so real
-transforms (`awk … > out`, `sed -i`, `npm run … | sed …`) are left alone. It **only ever asks or
-stays silent**, never allow/deny, so `deny-secret-access` still wins on a `sed`-reads-a-secret
-case. When it fires, the intended fix is to *rewrite* with `grep`/Read, not to approve.
+remaining command-runner and writer (`find`, `fd`, `xargs`, `tee`, `node`, …), so a write or
+arbitrary-exec can never ride along inside an "allowed" pipeline.
 
 ## Permission model at a glance
 

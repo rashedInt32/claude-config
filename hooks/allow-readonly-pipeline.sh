@@ -21,8 +21,20 @@
 #
 # Safety: a hook `allow` bypasses deny rules, so the allowed program set is
 # strict — only tools that read/transform to stdout and can neither run another
-# command nor be coerced into writing (no find/xargs/sed/awk/tee/node/...).
+# command nor be coerced into writing (no find/xargs/tee/node/...).
 # Fail-safe: anything we can't prove read-only yields silence, never `allow`.
+#
+# READ-ONLY SED/AWK are vouched as companions too (so `cd repo && grep x f &&
+# sed -n '/A/,/B/p' f | head` runs without a prompt — "read freely"). They're
+# gated on the things that turn a read into a WRITE/EXEC: the in-place / script-
+# file flags (-i/--in-place/-f/--file, gawk -i inplace) are rejected per-segment,
+# and the quoted script(s) are scanned for write/exec constructs — awk
+# `system()`/`getline`/`print … >`/`… | cmd`/`>>`, and sed `w`/`W`/`r`/`R`/`e`
+# commands and `s///w`/`s///e` flags. Any of those -> stay silent (the command
+# falls to the normal prompt). This is footgun-prevention consistent with the
+# rest of this config (node/npm already run arbitrary code), NOT a sandbox; the
+# scan errs toward bailing, and secret paths are still blocked by
+# deny-secret-access, which runs first.
 #
 # READ-ONLY GIT is vouched too, because the built-in "cd before git can run
 # untrusted repo hooks" heuristic forces an ask on `cd <dir> && git <ro>` even
@@ -70,6 +82,7 @@ git_ro_sub=" status log diff show branch blame remote tag reflog describe rev-pa
 
 found=0
 saw_git=0
+saw_sedawk=0
 cd_untrusted=0
 while IFS= read -r seg; do
   seg=$(printf '%s' "$seg" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
@@ -137,6 +150,30 @@ while IFS= read -r seg; do
     continue
   fi
 
+  case "$prog" in
+    sed|awk|gawk|nawk)
+      # Reject the flags that make sed/awk WRITE or load an unseen script:
+      # -i/--in-place (any short cluster containing i, e.g. -ni), -f/--file
+      # (program from a file we can't vet). gawk's `-i inplace` is caught by the
+      # bare `-i` token too. The script-content scan after the loop covers the
+      # in-program write/exec forms. Field separators (-F), -v, -n, -E, -r etc.
+      # carry no write capability and pass through.
+      read -ra t <<< "$seg"
+      kk=1
+      while [ $kk -lt ${#t[@]} ]; do
+        # short cluster containing a lowercase i (in-place) or f (script-file),
+        # e.g. -i, -i.bak, -ni, -f, -nf; or the long forms. -F/-v/-n/-E/-r/-s/-z
+        # carry no lowercase i|f, so field-separators and friends pass through.
+        if [[ "${t[$kk]}" =~ ^-[A-Za-z]*[if] ]] || [[ "${t[$kk]}" =~ ^--(in-place|file)(=|$) ]]; then
+          exit 0
+        fi
+        kk=$((kk + 1))
+      done
+      saw_sedawk=1
+      found=1
+      continue ;;
+  esac
+
   if [ "$prog" = "cd" ]; then
     read -ra t <<< "$seg"
     tgt="${t[1]:-}"
@@ -160,5 +197,21 @@ done <<< "$progs"
 # git + a cd that leaves the trusted roots: let the built-in warning apply.
 [ "$saw_git" -eq 1 ] && [ "$cd_untrusted" -eq 1 ] && exit 0
 
-printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"every segment is a read-only command (no writes, no command substitution, no redirect to a real file)."}}'
+# If a sed/awk reader is present, scan the quoted script(s) for in-program
+# write/exec constructs the flag check above can't see (they live inside quotes).
+# We scan EVERY quoted string in the command — over-bailing on an innocent match
+# inside some other tool's quoted arg (e.g. `grep 'system('`) just yields a
+# prompt, which is safe; the danger direction (allowing a hidden write) is what
+# we must never do.
+if [ "$saw_sedawk" -eq 1 ]; then
+  scripts=$(printf '%s' "$cmd" | grep -oE "'[^']*'|\"[^\"]*\"")
+  # awk: command exec, pipe, getline, and output redirection from a print/printf.
+  printf '%s' "$scripts" | grep -Eq 'system[[:space:]]*\(|getline|fflush[[:space:]]*\(|close[[:space:]]*\(|ENVIRON|/dev/std(in|out|err)|print[a-z]*[^;{}]*[>|]|>>|[[:space:]]\|[[:space:]]' && exit 0
+  # sed: w/W/r/R (write or read-file) and e (execute) commands — after a command
+  # boundary (start, ; { } !, an address digit/$, or a closing /) — plus the
+  # s///w and s///e substitution flags (/ and | delimiters).
+  printf '%s' "$scripts" | grep -Eq '([;{}!$/0-9]|[[:space:]])[[:space:]]*[wWrR][[:space:]]+[^[:space:];]|([;{}!$/0-9]|[[:space:]])[[:space:]]*e([[:space:]]|$)|s/[^/]*/[^/]*/[a-zA-Z0-9]*[we]|s\|[^|]*\|[^|]*\|[a-zA-Z0-9]*[we]' && exit 0
+fi
+
+printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"every segment is a read-only command (read-only sed/awk allowed; no writes, no command substitution, no redirect to a real file)."}}'
 exit 0
