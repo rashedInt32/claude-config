@@ -87,8 +87,6 @@
       "Bash(sha256sum:*)",
       "Bash(base64:*)",
       "Bash(jq:*)",
-      "Bash(sed:*)",
-      "Bash(awk:*)",
       "Bash(sort:*)",
       "Bash(uniq:*)",
       "Bash(cut:*)",

@@ -165,6 +165,13 @@ Because a hook `allow` bypasses `deny`, the read-only set is otherwise strict: i
 remaining command-runner and writer (`find`, `fd`, `xargs`, `tee`, `node`, …), so a write or
 arbitrary-exec can never ride along inside an "allowed" pipeline.
 
+`sed`/`awk` are deliberately **not** in the static `allow` list (like `find`), so this hook is
+their sole authority: read-only forms auto-allow here, while `sed -i`, redirects, and the other
+write/exec forms fall through to a prompt. Note this is footgun-prevention, **not** a sandbox —
+the script scan is heuristic and a *crafted* `sed`/`awk` write can evade it; that's acceptable
+because `node`/`npm`/`make` already run arbitrary code, and `deny-secret-access` still blocks
+secret paths. If you want a hard wall, deny `sed`/`awk` outright (you lose in-place edits).
+
 ## Permission model at a glance
 
 - **allow** — read-only git (incl. plumbing), coreutils, search tools, and JS runtimes
