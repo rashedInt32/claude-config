@@ -23,6 +23,18 @@
 # strict — only tools that read/transform to stdout and can neither run another
 # command nor be coerced into writing (no find/xargs/sed/awk/tee/node/...).
 # Fail-safe: anything we can't prove read-only yields silence, never `allow`.
+#
+# READ-ONLY GIT is vouched too, because the built-in "cd before git can run
+# untrusted repo hooks" heuristic forces an ask on `cd <dir> && git <ro>` even
+# when every segment is allowlisted. A git segment passes only if its
+# subcommand is in GIT_RO_SUB, no global flag precedes the subcommand (that's
+# git-flag-guard's domain), and no exec/write-capable flag follows (--output,
+# -O/--open-files-in-pager, --upload-pack, --ext-diff, ...). When a command
+# mixes git with cd, every cd target must stay inside a trusted root
+# ($HOME/Documents/codes, $HOME/.claude) or be a relative path without `..` —
+# otherwise we stay silent and the built-in warning still applies.
+# GIT_* env prefixes (GIT_EXTERNAL_DIFF, GIT_PAGER, ...) also force silence,
+# since they can make even a read-only subcommand execute something.
 
 cmd="$(jq -r '.tool_input.command // empty')"
 [ -z "$cmd" ] && exit 0
@@ -52,7 +64,13 @@ progs=$(printf '%s' "$forsplit" | awk '{ gsub(/[;&|]/, "\n"); print }')
 # and writing to a non-secret path is already permitted by the static allowlist.
 roset=" base64 basename cat cd cksum column comm cmp cut date df diff dirname du echo egrep false fgrep file grep head hexdump jq ls md5sum nl od printenv printf pwd readlink realpath rev rg seq sha256sum shasum sleep sort stat strings tac tail test [ [[ : tr tree true type uniq wc which xxd "
 
+# git subcommands safe to vouch (mirrors the static allowlist; never includes
+# commit/push/reset/rebase/clean, so no ask/deny rule can be bypassed).
+git_ro_sub=" status log diff show branch blame remote tag reflog describe rev-parse ls-files ls-tree ls-remote shortlog fetch cat-file for-each-ref name-rev merge-base rev-list grep var version show-ref diff-tree diff-index count-objects whatchanged stash "
+
 found=0
+saw_git=0
+cd_untrusted=0
 while IFS= read -r seg; do
   seg=$(printf '%s' "$seg" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
   [ -z "$seg" ] && continue
@@ -79,7 +97,7 @@ while IFS= read -r seg; do
       [A-Za-z_]*=*)                     # benign VAR=value assignment prefix
         name=${first%%=*}
         case "$name" in
-          PATH|IFS|ENV|BASH_ENV|BASHOPTS|SHELLOPTS|CDPATH|GLOBIGNORE|FIGNORE|FPATH|PS4|PROMPT_COMMAND|HISTFILE|LD_*|DYLD_*|BASH_*)
+          PATH|IFS|ENV|BASH_ENV|BASHOPTS|SHELLOPTS|CDPATH|GLOBIGNORE|FIGNORE|FPATH|PS4|PROMPT_COMMAND|HISTFILE|LD_*|DYLD_*|BASH_*|GIT_*)
             exit 0 ;;
         esac
         rest=${seg#*[[:space:]]}
@@ -91,6 +109,47 @@ while IFS= read -r seg; do
   [ -z "$seg" ] && continue        # segment was only keywords / benign assignments
   prog=${seg%%[[:space:]]*}
   prog=${prog##*/}
+
+  if [ "$prog" = "git" ]; then
+    read -ra t <<< "$seg"
+    sub="${t[1]:-}"
+    case "$sub" in
+      ''|-*) exit 0 ;;             # bare git, or global flag before subcommand
+    esac
+    case "$git_ro_sub" in
+      *" $sub "*) : ;;
+      *) exit 0 ;;                 # not a vouched subcommand -> stay silent
+    esac
+    if [ "$sub" = "stash" ]; then
+      [ "${t[2]:-}" = "list" ] || exit 0
+    fi
+    k=2
+    while [ $k -lt ${#t[@]} ]; do
+      case "${t[$k]}" in
+        # flags that write a file or execute another program
+        --output*|-o|-O*|--open-files-in-pager*|--upload-pack*|--receive-pack*|--exec*|--ext-diff)
+          exit 0 ;;
+      esac
+      k=$((k + 1))
+    done
+    saw_git=1
+    found=1
+    continue
+  fi
+
+  if [ "$prog" = "cd" ]; then
+    read -ra t <<< "$seg"
+    tgt="${t[1]:-}"
+    case "$tgt" in
+      *..*) cd_untrusted=1 ;;                             # any climb -> untrusted (even under a trusted prefix)
+      ''|-) : ;;                                          # home / OLDPWD
+      "$HOME/Documents/codes"|"$HOME/Documents/codes"/*) : ;;
+      "$HOME/.claude"|"$HOME/.claude"/*) : ;;
+      /*) cd_untrusted=1 ;;                               # absolute, outside trusted roots
+      *) : ;;                                             # relative without a climb -> fine
+    esac
+  fi
+
   case "$roset" in
     *" $prog "*) found=1 ;;
     *) exit 0 ;;                   # an unknown / non-read-only program -> stay silent
@@ -98,6 +157,8 @@ while IFS= read -r seg; do
 done <<< "$progs"
 
 [ "$found" -eq 1 ] || exit 0       # nothing recognizable -> no opinion
+# git + a cd that leaves the trusted roots: let the built-in warning apply.
+[ "$saw_git" -eq 1 ] && [ "$cd_untrusted" -eq 1 ] && exit 0
 
 printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"every segment is a read-only command (no writes, no command substitution, no redirect to a real file)."}}'
 exit 0

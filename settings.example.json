@@ -232,6 +232,11 @@
             "type": "command",
             "command": "bash \"$HOME/.claude/hooks/allow-readonly-pipeline.sh\"",
             "statusMessage": "Checking read-only pipeline"
+          },
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/nudge-sed-awk-reads.sh\"",
+            "statusMessage": "Checking sed/awk read usage"
           }
         ]
       }
