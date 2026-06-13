@@ -56,20 +56,24 @@ nosq=$(printf '%s' "$cmd" | sed -E "s/'[^']*'//g")
 # backticks / process substitution: can't vouch -> stay silent.
 printf '%s' "$nosq" | grep -Eq '`|<\(|>\(' && exit 0
 
-# Command substitution $(...): vouch ONLY when every occurrence is an ASSIGNMENT
-# value -- VAR=$(...) or VAR="$(...)". There the output lands in a variable
-# (never executed at command position); a later `$var` used as a command isn't in
-# the read-only set, so it bails anyway. Each inner command is then validated as
-# an ordinary read-only segment (appended to nosq below). Any $(...) that is NOT
-# an assignment value -- command position, a bare argument, nested, arithmetic
-# $(( -- keeps us silent. This makes `f=$(find . | head -1); grep x "$f"` vouch
-# while `$(printf rm) file` / `"$(rm -rf x)" f` / `f=$(rm x)` do not.
+# Command substitution $(...): vouch when every occurrence is FLAT (not nested)
+# and not arithmetic, AND both the inner command and the outer command validate
+# as read-only below. We do NOT require assignment position: a $(...) in ARGUMENT
+# position (e.g. `git diff $(git merge-base develop HEAD) HEAD`) is just as safe,
+# because each $(...) is replaced by a sentinel `X` and every inner command is
+# appended as its own segment -- so both the outer (with X) and the inner must
+# pass the read-only program check. A $(...) in COMMAND position is rejected for
+# free: its `X` lands in the program slot, and `X` isn't read-only, so the
+# segment bails. This makes `f=$(find . | head -1); grep x "$f"` and
+# `git diff $(git merge-base develop HEAD) HEAD` vouch, while `$(printf rm) file`
+# (X at command position), `"$(rm -rf x)" f` (rm inner not read-only),
+# `f=$(rm x)`, nested `$(echo $(date))`, and arithmetic `$((1+2))` do not.
 if printf '%s' "$nosq" | grep -q '\$('; then
-  probe=$(printf '%s' "$nosq" | sed -E 's/="?\$\(/=@OK(/g')
-  printf '%s' "$probe" | grep -q '\$(' && exit 0          # a $( outside assignment value
-  inners=$(printf '%s' "$nosq" | grep -oE '\$\([^)]*\)' | sed -E 's/^\$\(//; s/\)$//')
+  printf '%s' "$nosq" | grep -q '\$((' && exit 0          # arithmetic $(( -> bail
+  inners=$(printf '%s' "$nosq" | grep -oE '\$\([^()]*\)' | sed -E 's/^\$\(//; s/\)$//')
+  outer=$(printf '%s' "$nosq" | sed -E 's/"?\$\([^()]*\)"?/X/g')
+  printf '%s' "$outer" | grep -q '\$(' && exit 0          # leftover $( = nested -> bail
   [ -z "$inners" ] && exit 0                                # nothing extractable -> bail
-  outer=$(printf '%s' "$nosq" | sed -E 's/"?\$\([^)]*\)"?/X/g')
   nosq="$outer ; $(printf '%s' "$inners" | tr '\n' ';')"   # outer + each inner as segments
 fi
 
