@@ -21,7 +21,10 @@
 #
 # Safety: a hook `allow` bypasses deny rules, so the allowed program set is
 # strict — only tools that read/transform to stdout and can neither run another
-# command nor be coerced into writing (no find/xargs/tee/node/...).
+# command nor be coerced into writing (tee/node/sh/... stay out). find and xargs
+# ARE exec-capable but get dedicated read-only checks below: find rejects its
+# exec/write actions, and xargs is vouched only when the command it runs is
+# itself in the read-only set (so `xargs -n1 basename` allows, `xargs rm` bails).
 # Fail-safe: anything we can't prove read-only yields silence, never `allow`.
 #
 # READ-ONLY SED/AWK are vouched as companions too (so `cd repo && grep x f &&
@@ -204,6 +207,52 @@ while IFS= read -r seg; do
     printf '%s' "$seg" | grep -Eq '(^|[[:space:]])(-delete|-exec|-execdir|-ok|-okdir|-fprint|-fprintf|-fls)([[:space:]]|$)' && exit 0
     found=1
     continue
+  fi
+
+  if [ "$prog" = "xargs" ]; then
+    # read-only xargs: xargs is exec-capable, so vouch ONLY when the command it
+    # runs is itself in the read-only set (e.g. `xargs -n1 basename`). Walk the
+    # option tokens and stop at the first non-option -- that's the command word.
+    # To stay safe we accept ONLY no-arg flags and ATTACHED option args
+    # (-n1, -P4, -I{}); a SEPARATED option arg (-n 1), a replace/eof option, an
+    # unknown flag, or any long option that might take an arg all BAIL. Rationale:
+    # the earlier `tr -d '(){}'` strips `{}` placeholders, so a separated arg
+    # could otherwise let a real command be mistaken for an option value
+    # (`xargs -I {} rm` -> `xargs -I rm`). No command word found (bare xargs, or a
+    # quote-hidden command stripped to nothing) also bails. Like the rest of this
+    # file: footgun-prevention, not a sandbox -- a contrived `xargs "rm" f` that
+    # quotes its command is out of scope (quotes are already stripped upstream).
+    read -ra t <<< "$seg"
+    xi=1
+    xcmd=""
+    while [ $xi -lt ${#t[@]} ]; do
+      tok="${t[$xi]}"
+      case "$tok" in
+        --*=*) : ;;                                          # self-contained long opt
+        --no-run-if-empty|--null|--verbose|--exit|--interactive|--open-tty) : ;;
+        --*) exit 0 ;;                                       # long opt may take an arg -> bail
+        -?*)
+          cl="${tok#-}"; j=0; clen=${#cl}
+          while [ $j -lt $clen ]; do
+            c="${cl:$j:1}"
+            case "$c" in
+              0|o|p|r|t|x) j=$((j + 1)) ;;                   # no-arg flag char
+              n|P|I|J|L|s|d|E|e|i|l|a|R|S)
+                [ -z "${cl:$((j + 1))}" ] && exit 0          # separated arg form -> bail
+                j=$clen ;;                                   # attached arg = rest of cluster
+              *) exit 0 ;;                                   # unknown flag char -> bail
+            esac
+          done ;;
+        *) xcmd="$tok"; break ;;                             # first non-option = the command
+      esac
+      xi=$((xi + 1))
+    done
+    [ -z "$xcmd" ] && exit 0                                 # no command word -> stay silent
+    xcmd="${xcmd##*/}"
+    case "$roset" in
+      *" $xcmd "*) found=1; continue ;;
+      *) exit 0 ;;                                           # command not read-only -> stay silent
+    esac
   fi
 
   if [ "$prog" = "cd" ]; then

@@ -176,8 +176,15 @@ sandbox (the rest of the allowlist already runs arbitrary code via `node`/`npm`/
 `deny-secret-access` — which runs first — still blocks `sed`/`awk` on secret paths.
 
 Because a hook `allow` bypasses `deny`, the read-only set is otherwise strict: it excludes every
-remaining command-runner and writer (`find`, `fd`, `xargs`, `tee`, `node`, …), so a write or
-arbitrary-exec can never ride along inside an "allowed" pipeline.
+remaining command-runner and writer (`fd`, `tee`, `node`, `sh`, …), so a write or arbitrary-exec
+can never ride along inside an "allowed" pipeline. Two exec-capable tools get **dedicated
+read-only checks** instead of a blanket exclusion: **`find`** is vouched only when it carries no
+`-delete`/`-exec`/`-fprint*`/redirect action, and **`xargs`** only when the command it runs is
+itself in the read-only set — so `ls | xargs -n1 basename` auto-allows, while `xargs rm`,
+`xargs sh -c "…"`, a separated option arg (`xargs -n 1 …`), or a bare `xargs` all fall back to a
+prompt. (To stay safe against the earlier `{}`-stripping, only no-arg flags and *attached* option
+args — `-n1`, `-P4`, `-I{}` — are parsed; anything ambiguous bails. This mirrors `find-guard`'s
+own `find … | xargs grep` vs `find … | xargs rm` split.)
 
 `sed`/`awk` are deliberately **not** in the static `allow` list (like `find`), so this hook is
 their sole authority: read-only forms auto-allow here, while `sed -i`, redirects, and the other
