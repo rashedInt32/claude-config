@@ -1,14 +1,15 @@
 # claude-config
 
 A curated [Claude Code](https://docs.claude.com/en/docs/claude-code) permission setup
-plus six safety hooks. The guiding principle:
+plus six safety hooks (and two workflow hooks). The guiding principle:
 
 > **Read freely, gate on write.** Investigation/read commands run without prompting;
 > anything that changes state (writes, pushes, history rewrites, installs, deletes)
 > still asks.
 
-The real value is `settings.example.json` (the permission model) and the six hooks
-in `hooks/` that close gaps a static allowlist can't.
+The real value is `settings.example.json` (the permission model) and the six safety
+hooks in `hooks/` that close gaps a static allowlist can't. Two extra workflow hooks
+typecheck edited TypeScript at the end of each turn.
 
 ## What's inside
 
@@ -20,6 +21,8 @@ hooks/
   allow-localhost-curl.sh     # auto-allow localhost curl/wget, ask otherwise
   find-guard.sh               # auto-allow read-only find, ask on -delete/-exec/...
   allow-readonly-pipeline.sh  # auto-allow all-read-only pipelines (incl. read-only git + sed/awk) the built-in matcher balks at
+  record-ts-edit.sh           # (workflow) note which .ts/.tsx files were edited this turn
+  typecheck-on-stop.sh        # (workflow) typecheck those projects when the turn ends
 settings.example.json         # permissions (allow/deny/ask) + hook wiring
 ```
 
@@ -192,6 +195,25 @@ write/exec forms fall through to a prompt. Note this is footgun-prevention, **no
 the script scan is heuristic and a *crafted* `sed`/`awk` write can evade it; that's acceptable
 because `node`/`npm`/`make` already run arbitrary code, and `deny-secret-access` still blocks
 secret paths. If you want a hard wall, deny `sed`/`awk` outright (you lose in-place edits).
+
+## Workflow hooks (TypeScript typecheck on stop)
+
+These two aren't about safety — they keep a fast feedback loop on TypeScript edits without
+adding per-edit noise. Wired as `PostToolUse` (Write|Edit) and `Stop` in `settings.example.json`.
+
+### `record-ts-edit.sh`
+A `PostToolUse` hook on `Write|Edit`. It does **no** typechecking — it just appends each edited
+`.ts`/`.tsx` path to a per-session queue file (`$TMPDIR/claude-tsq-<session>.txt`). Instant and
+silent, so editing produces zero prompts or delay. Set `SKIP_GLOB` at the top to exclude repos
+you never want auto-typechecked (e.g. a vendored repo with its own checks); leave it pointing at a
+non-existent path to check everything.
+
+### `typecheck-on-stop.sh`
+A `Stop` hook that fires once when the turn ends. It reads the queue, resolves the nearest
+`package.json` above each edited file, and typechecks each unique project — preferring
+`pnpm typecheck`, falling back to a local `tsc --noEmit`. On failure it **blocks once** (sending
+the model back to fix the errors), then on the next stop **warns only** so it never loops forever.
+All green clears the queue.
 
 ## Permission model at a glance
 
