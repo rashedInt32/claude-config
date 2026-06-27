@@ -23,7 +23,8 @@ hooks/
   allow-readonly-pipeline.sh  # auto-allow all-read-only pipelines (incl. read-only git + sed/awk) the built-in matcher balks at
   record-ts-edit.sh           # (workflow) note which .ts/.tsx files were edited this turn
   typecheck-on-stop.sh        # (workflow) typecheck those projects when the turn ends
-settings.example.json         # permissions (allow/deny/ask) + hook wiring
+settings.example.json         # permissions (allow/deny/ask) + hook wiring + editorMode
+keybindings.example.json      # Shift+Enter = newline (so plain Enter submits)
 ```
 
 ## Requirements
@@ -53,7 +54,18 @@ settings.example.json         # permissions (allow/deny/ask) + hook wiring
    (Permission rules match the literal command text, so use the real absolute path —
    `~` won't expand here.)
 
-4. **Restart Claude Code.** Hooks hot-reload, but **permission rules are read at
+4. **(Optional) Editor mode & keybindings.** `settings.example.json` sets
+   `"editorMode": "vim"` for vim-style editing in the prompt box (`/config` →
+   *Editor mode* to toggle, or `"normal"` to disable). To make plain **Enter** submit
+   and **Shift+Enter** insert a newline, copy the keybindings template:
+   ```sh
+   cp keybindings.example.json ~/.claude/keybindings.json
+   ```
+   In tmux/screen, Shift+Enter may be swallowed — `Ctrl+J` and `\`+Enter always work as
+   newline fallbacks. Terminals like iTerm2/WezTerm/Ghostty/Kitty pass Shift+Enter through
+   natively.
+
+5. **Restart Claude Code.** Hooks hot-reload, but **permission rules are read at
    startup** — changes to `allow`/`deny`/`ask` only take effect after a restart (or
    reopening via `/hooks`).
 

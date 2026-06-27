@@ -5,6 +5,7 @@
     "DO_NOT_TRACK": "1",
     "BASH_DEFAULT_TIMEOUT_MS": "300000"
   },
+  "editorMode": "vim",
   "permissions": {
     "defaultMode": "default",
     "allow": [
