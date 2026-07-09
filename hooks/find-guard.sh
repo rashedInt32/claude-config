@@ -60,11 +60,41 @@ safe="${roset}find GITRO XARGSRO "
 while IFS= read -r seg; do
   seg=$(printf '%s' "$seg" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
   [ -z "$seg" ] && continue
+  # Peel shell keywords and benign `VAR=value` prefixes until a real command word
+  # remains (mirrors allow-readonly-pipeline). A `B=/some/path` sweep prefix runs
+  # nothing, so it must not be judged as a program; env vars that change which
+  # binary runs or how words split still force an ask.
+  while [ -n "$seg" ]; do
+    first=${seg%%[[:space:]]*}
+    case "$first" in
+      for|done|fi|esac|in)              # this segment executes no command
+        seg=""; break ;;
+      do|then|else|while|until|if|elif) # keyword precedes a command -> peel it
+        rest=${seg#*[[:space:]]}
+        [ "$rest" = "$seg" ] && { seg=""; break; }
+        seg=$(printf '%s' "$rest" | sed -E 's/^[[:space:]]+//'); continue ;;
+    esac
+    case "$first" in
+      [A-Za-z_]*=*)                    # benign VAR=value assignment prefix
+        name=${first%%=*}
+        case "$name" in
+          PATH|IFS|ENV|BASH_ENV|BASHOPTS|SHELLOPTS|CDPATH|GLOBIGNORE|FIGNORE|FPATH|PS4|PROMPT_COMMAND|HISTFILE|LD_*|DYLD_*|BASH_*|GIT_*)
+            emit ask "$ASK" ;;
+        esac
+        rest=${seg#*[[:space:]]}
+        [ "$rest" = "$seg" ] && { seg=""; break; }  # pure assignment, nothing follows
+        seg=$(printf '%s' "$rest" | sed -E 's/^[[:space:]]+//'); continue ;;
+    esac
+    break                              # reached a real command token
+  done
+  [ -z "$seg" ] && continue        # segment was only keywords / benign assignments
   prog=${seg%%[[:space:]]*}
-  prog=${prog##*/}
+  # `=` test runs BEFORE the basename strip: `${prog##*/}` on `PATH=/tmp/x/cat`
+  # would otherwise yield `cat` and wave a poisoned PATH through as read-only.
   case "$prog" in
-    *=*) emit ask "$ASK" ;;          # VAR=val prefix (e.g. LD_PRELOAD=...) -> ask
+    *=*) emit ask "$ASK" ;;          # assignment prefix that wasn't vouched above
   esac
+  prog=${prog##*/}
   case "$safe" in
     *" $prog "*) ;;                  # read-only companion, ok
     *) emit ask "$ASK" ;;            # interpreter / unknown executable / writer -> ask
