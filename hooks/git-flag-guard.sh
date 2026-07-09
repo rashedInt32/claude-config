@@ -10,6 +10,15 @@
 # It only engages when such global flags are actually present; plain `git push`/
 # `git diff` fall through untouched to the normal permission rules.
 #
+# `-c <key=value>` and `--config-env` are ALWAYS denied, never vouched: several
+# config keys (core.pager, core.sshCommand, core.editor, core.hooksPath,
+# diff.external, alias.*, uploadpack.packObjectsHook, *.program, credential.helper,
+# filter.*.clean/smudge, ...) make git EXECUTE an arbitrary command even under a
+# read-only subcommand, so `git -c core.pager=/x/evil.sh log` would otherwise be
+# waved through. The value is opaque to a word-scan, so we don't try to classify
+# safe vs unsafe keys — deny the flag outright. -C/--git-dir/--work-tree carry no
+# such exec capability and stay allowed.
+#
 # Safety: tokenizes via a here-string (NO eval, NO command substitution), so a
 # crafted command string cannot inject execution through this guard.
 
@@ -42,11 +51,16 @@ while [ $i -lt $n ]; do
     case "$o" in
       '&&'|'||'|';'|'|'|'|&'|'>'|'>>'|'<'|'2>'|'2>>'|'&')
         break ;;
+      # -c/--config-env can set command-executing config (core.pager,
+      # core.sshCommand, diff.external, alias.*, ...) that runs an arbitrary
+      # command even when the subcommand is read-only -> never vouch, deny.
+      -c|-c=*|--config-env|--config-env=*)
+        decide="deny_config"; break ;;
       # global options that consume the NEXT token as their argument
-      -C|--git-dir|--work-tree|--namespace|--super-prefix|--exec-path|-c)
+      -C|--git-dir|--work-tree|--namespace|--super-prefix|--exec-path)
         has_global=1; j=$((j + 2)); continue ;;
       # global options with an attached =value, or standalone global flags
-      --git-dir=*|--work-tree=*|--namespace=*|--exec-path=*|--super-prefix=*|-c=*)
+      --git-dir=*|--work-tree=*|--namespace=*|--exec-path=*|--super-prefix=*)
         has_global=1; j=$((j + 1)); continue ;;
       -p|--paginate|-P|--no-pager|--bare|--no-replace-objects|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs|--no-optional-locks|--no-advice)
         has_global=1; j=$((j + 1)); continue ;;
@@ -69,8 +83,11 @@ while [ $i -lt $n ]; do
 done
 
 case "$decide" in
+  deny_config)
+    printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"git -c/--config-env can set command-executing config (core.pager, core.sshCommand, diff.external, alias.*, ...) that runs an arbitrary command even under a read-only subcommand. Drop the -c flag, or set the config in the repo and run plain git."}}'
+    ;;
   deny)
-    printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"git global flag (-C/-c/--git-dir/--work-tree) reaches a non-read-only subcommand, bypassing the subcommand permission rules. cd into the repo and run plain git instead."}}'
+    printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"git global flag (-C/--git-dir/--work-tree) reaches a non-read-only subcommand, bypassing the subcommand permission rules. cd into the repo and run plain git instead."}}'
     ;;
   allow)
     printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"git with global flags resolves to a read-only subcommand."}}'
