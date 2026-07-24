@@ -142,10 +142,6 @@
       "Edit(.env.*)",
       "Edit(//**/.env)",
       "Edit(//**/.env.*)",
-      "Write(.env)",
-      "Write(.env.*)",
-      "Write(//**/.env)",
-      "Write(//**/.env.*)",
       "Edit(~/.ssh/**)",
       "Edit(//**/.ssh/**)",
       "Edit(//**/*.pem)",
@@ -231,6 +227,11 @@
             "type": "command",
             "command": "bash \"$HOME/.claude/hooks/allow-readonly-pipeline.sh\"",
             "statusMessage": "Checking read-only pipeline"
+          },
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/allow-readonly-python.sh\"",
+            "statusMessage": "Checking read-only python -c"
           }
         ]
       }
