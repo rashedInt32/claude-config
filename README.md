@@ -1,13 +1,13 @@
 # claude-config
 
 A curated [Claude Code](https://docs.claude.com/en/docs/claude-code) permission setup
-plus six safety hooks (and two workflow hooks). The guiding principle:
+plus seven safety hooks (and two workflow hooks). The guiding principle:
 
 > **Read freely, gate on write.** Investigation/read commands run without prompting;
 > anything that changes state (writes, pushes, history rewrites, installs, deletes)
 > still asks.
 
-The real value is `settings.example.json` (the permission model) and the six safety
+The real value is `settings.example.json` (the permission model) and the seven safety
 hooks in `hooks/` that close gaps a static allowlist can't. Two extra workflow hooks
 typecheck edited TypeScript at the end of each turn.
 
@@ -21,10 +21,15 @@ hooks/
   allow-localhost-curl.sh     # auto-allow localhost curl/wget, ask otherwise
   find-guard.sh               # auto-allow read-only find, ask on -delete/-exec/...
   allow-readonly-pipeline.sh  # auto-allow all-read-only pipelines (incl. read-only git + sed/awk) the built-in matcher balks at
+  allow-readonly-python.sh    # auto-allow read-only `python -c` inspection one-liners
   record-ts-edit.sh           # (workflow) note which .ts/.tsx files were edited this turn
   typecheck-on-stop.sh        # (workflow) typecheck those projects when the turn ends
+commands/
+  rv.md                       # /rv  — review a diff with a fresh-context subagent
+  strict.md                   # /strict — hard rules preamble for a task
 settings.example.json         # permissions (allow/deny/ask) + hook wiring + editorMode
 keybindings.example.json      # Shift+Enter = newline (so plain Enter submits)
+CLAUDE.example.md             # optional global guidelines (skill routing)
 ```
 
 ## Requirements
@@ -46,13 +51,23 @@ keybindings.example.json      # Shift+Enter = newline (so plain Enter submits)
    blocks (arrays are additive — don't drop your existing entries). The hook commands
    reference `$HOME/.claude/hooks/...`, so they work for any user.
 
-3. **Edit the one machine-specific rule.** In `permissions.allow`, replace
+3. **Point the three machine-specific settings at your own paths.**
+
+   a. In `permissions.allow`, replace
    ```
    "Bash(cd /CHANGE-ME/to/your/projects/root*)"
    ```
    with the absolute path to where your code lives, e.g. `"Bash(cd /Users/you/code*)"`.
    (Permission rules match the literal command text, so use the real absolute path —
    `~` won't expand here.)
+
+   b. In `hooks/allow-readonly-pipeline.sh`, set `TRUSTED_ROOTS` (near the top) to the
+   same place — it defaults to `$HOME/code` and `$HOME/.claude`. This is the allowlist of
+   roots where `cd <repo> && git log` sweeps are auto-approved; if your code isn't under
+   one of them, read-only git will still prompt. `$HOME` **does** expand here.
+
+   c. In `hooks/record-ts-edit.sh`, optionally set `SKIP_GLOB` to exclude a repo from
+   auto-typechecking. Leave the placeholder to typecheck everything.
 
 4. **(Optional) Editor mode & keybindings.** `settings.example.json` sets
    `"editorMode": "vim"` for vim-style editing in the prompt box (`/config` →
@@ -65,11 +80,20 @@ keybindings.example.json      # Shift+Enter = newline (so plain Enter submits)
    newline fallbacks. Terminals like iTerm2/WezTerm/Ghostty/Kitty pass Shift+Enter through
    natively.
 
-5. **Restart Claude Code.** Hooks hot-reload, but **permission rules are read at
+5. **(Optional) Slash commands & global guidelines.**
+   ```sh
+   mkdir -p ~/.claude/commands
+   cp commands/*.md ~/.claude/commands/    # adds /rv and /strict
+   cp CLAUDE.example.md ~/.claude/CLAUDE.md
+   ```
+   See [Slash commands & guidelines](#slash-commands--guidelines) below. `CLAUDE.md` is
+   user-global guidance — merge it into yours rather than overwriting if you already have one.
+
+6. **Restart Claude Code.** Hooks hot-reload, but **permission rules are read at
    startup** — changes to `allow`/`deny`/`ask` only take effect after a restart (or
    reopening via `/hooks`).
 
-## The six hooks
+## The seven hooks
 
 ### `deny-secret-access.sh`
 The `deny` rules for secrets (`Read(.env)`, `Read(~/.ssh/**)`, `Read(//**/*.pem)`, …) are scoped
@@ -89,6 +113,19 @@ a quote-stripped copy so real paths are caught but prose isn't, and config templ
 (`.env.example`/`.sample`/`.template`/`.dist`/`.defaults`/`.schema`) are exempt. Fail-safe: it only
 ever denies or stays silent.
 
+**Two narrow carve-outs downgrade a hard deny to a normal prompt** (never to an allow — a human
+still confirms, so an imperfect match can at worst cost you a keystroke):
+
+- **`.env` setup.** `cp .env.example .env` (and `mv`/`ln`) is the standard first step in every
+  repo, and hard-denying it was pure friction. The carve-out is tight: a single simple command
+  (no chaining, redirect, or substitution), exactly two positional args, the **destination** in
+  the `.env` family, and the **source** referencing no secret. `-t`/`--target-directory` breaks
+  the "last arg is the destination" assumption, so it disables the carve-out. Key stores
+  (`.ssh`/`.aws`/`authorized_keys`) are deliberately **excluded** — those stay denied.
+- **`--env-file` / `--env`.** `docker`/`podman` (and their `-compose` forms) *pass* a secret into
+  a container rather than printing it. Those flag values are stripped before the secret scan, so
+  a `-v ~/.ssh:/root/.ssh` mount still trips the deny.
+
 
 
 ### `ask-on-package-install.sh`
@@ -96,6 +133,10 @@ The package managers (`npm`, `pnpm`, `yarn`, `bun`) are allowlisted so build/run
 commands don't prompt — but **installs always should**. This hook detects
 `install/add/ci/update/upgrade/i` anywhere in the command (including `npx pnpm@9 install`,
 `pnpm -C pkg add`, `corepack pnpm add`) and forces a confirmation.
+
+A **script named after an install verb** is not an install: `npm run ci` and `pnpm run update`
+are neutralized before the scan, so they don't prompt. A real install elsewhere in the same
+command still matches (`npm run build && npm install lodash` asks).
 
 ### `git-flag-guard.sh`
 Allow rules are **prefix matches** (`Bash(git diff:*)`). A leading global flag shifts the
@@ -105,6 +146,17 @@ subcommand after skipping global flags (`-C`, `-c`, `--git-dir`, `--work-tree`, 
 - **allows** read-only subcommands (`diff`, `log`, `show`, `status`, …),
 - **denies** everything else (`push`, `reset`, `rebase`, `commit`, …) — `cd` into the
   repo and use plain git for writes, where your normal rules apply.
+
+Two refinements keep that rule from over- and under-firing:
+
+- **`-c` / `--config-env` always deny.** They can hand git a command to execute
+  (`git -c core.pager=/tmp/evil.sh log` would otherwise have been vouched as a read-only `log`),
+  so no subcommand is read-only enough to survive them. `-C` / `--git-dir` / `--work-tree` only
+  retarget the repo, so a read-only subcommand behind them is still allowed.
+- **Cosmetic flags don't force a deny.** `--no-pager`, `-p`/`--paginate`,
+  `--no-optional-locks` neither retarget the repo nor enable exec, so `git --no-pager commit`
+  falls through to your **normal** rules (which is what you want — a plain commit prompt)
+  instead of being hard-denied, while `git --no-pager log` is still auto-allowed.
 
 It scans the whole command, so compound forms like `ls && git -C /x push` are caught too.
 Tokenizes without `eval`/command-substitution, so the guard itself can't be injected.
@@ -179,6 +231,11 @@ subcommand (that's `git-flag-guard`'s job) or an exec/write flag after it
 `cd` is present — requires every `cd` target to stay inside a trusted root (no climbing out
 via `..`), so a malicious sibling repo's config can't ride along.
 
+Those roots are the **`TRUSTED_ROOTS` array at the top of the hook** — set it to where your
+code lives (see install step 3b). Keep it small: git can execute code from a repo's own
+config, so this is an allowlist, not "anywhere". One trusted `cd` never forgives an untrusted
+one — `cd /evil && cd ~/code && git log` still prompts.
+
 It also vouches **read-only `sed`/`awk`** as companions, so a sweep like
 `cd repo && grep -n serve f.ts && sed -n '/A/,/B/p' f.ts | head` runs without a prompt —
 honoring *read freely*. `sed`/`awk` can write (`-i`, the `w` command, `print > file`) or
@@ -208,6 +265,30 @@ the script scan is heuristic and a *crafted* `sed`/`awk` write can evade it; tha
 because `node`/`npm`/`make` already run arbitrary code, and `deny-secret-access` still blocks
 secret paths. If you want a hard wall, deny `sed`/`awk` outright (you lose in-place edits).
 
+### `allow-readonly-python.sh`
+`python3 -c "…"` prompts even for pure data inspection, for two reasons a static allow rule
+can't fix: interpreters are deliberately excluded from `allow-readonly-pipeline`'s read-only
+set (they run arbitrary code), **and** a built-in Claude Code heuristic — *"newline followed by
+`#` inside a quoted argument can hide arguments from path validation"* — forces an `ask` that
+`Bash(python3:*)` cannot override. Only a hook `allow` can, and a Python comment on its own
+line trips it every time.
+
+This hook is python's sole authority, and vouches exactly one narrow shape:
+- a **single** command — no `;`/`&&`/`||`/`|`/`&`, no redirects, no command or process
+  substitution (checked on a quote-stripped skeleton),
+- program is `python` / `python2` / `python3` / `pythonX.Y`,
+- invoked as **`-c "<script>"`** — not a `.py` file, not `-m module`, not `-` stdin, not `-i`
+  (those can't be vetted),
+- and the script contains **no** write / exec / network / dynamic-eval construct
+  (`open(…, 'w')`, `os.system`, `subprocess`, `socket`, `requests`, `eval`, `exec`, `__import__`,
+  …) and references no secret path.
+
+So `python3 -c "import json;print(json.load(open('a.json'))['k'])"` runs silently, while anything
+that writes, shells out, reaches the network, or reads a `.env` falls back to a prompt. Same
+doctrine as its siblings: a hook `allow` bypasses `deny`, so the scan errs toward **bailing** — a
+false prompt is safe, a false allow is not. Footgun-prevention, not a sandbox (`python3` is
+already as powerful as the allowlisted `node:*`).
+
 ## Workflow hooks (TypeScript typecheck on stop)
 
 These two aren't about safety — they keep a fast feedback loop on TypeScript edits without
@@ -223,9 +304,45 @@ non-existent path to check everything.
 ### `typecheck-on-stop.sh`
 A `Stop` hook that fires once when the turn ends. It reads the queue, resolves the nearest
 `package.json` above each edited file, and typechecks each unique project — preferring
-`pnpm typecheck`, falling back to a local `tsc --noEmit`. On failure it **blocks once** (sending
-the model back to fix the errors), then on the next stop **warns only** so it never loops forever.
-All green clears the queue.
+`pnpm typecheck`, falling back to a local `tsc --noEmit`.
+
+It is **warn-only**: on failure it surfaces the errors in files you edited this turn as a
+non-blocking note and the turn ends normally. An earlier version blocked once to force a fix
+round-trip; that traded a real interruption for a check you can act on when you choose. Errors
+elsewhere in the project are left alone — only files touched this turn are reported. The queue is
+cleared either way.
+
+To skip the typecheck entirely, create the opt-out sentinel:
+```sh
+touch ~/.claude/.no-typecheck    # rm it to re-enable
+```
+
+## Slash commands & guidelines
+
+Optional, unrelated to the permission model — copy them or don't.
+
+### `/rv` — review a diff
+Hands **only the diff** (never the conversation or the writer's reasoning) to a fresh-context
+code-reviewer subagent, whose stance is *assume the code is wrong*. It picks the diff
+automatically — explicit `$ARGUMENTS` range, else uncommitted changes, else the branch against
+its merge-base — and reports it before reviewing. Flags **only** correctness bugs, gaps against
+stated requirements, and security issues; style and refactors go in a separate non-blocking
+"optional" list. Hunts specifically for code that typechecks but misbehaves (eager vs lazy, wrong
+default, inverted condition, off-by-one, stale state), workarounds that need a long comment to
+justify themselves, and weakened or deleted assertions. Told plainly not to invent issues to look
+useful.
+
+### `/strict` — hard rules for a task
+Prepends eight non-negotiable rules to `$ARGUMENTS`: no workarounds or stubs, minimal change,
+tests are ground truth (never skip or weaken one to go green), no history-discarding git
+(`stash`/`reset`), match existing patterns, check for correct-not-just-compiling, verify before
+claiming done and show the output, and stop and ask rather than guess.
+
+### `CLAUDE.example.md`
+Four lines of user-global guidance that route security-sensitive work (auth, secrets, untrusted
+input, data storage) to a hardening skill **before** the code gets written. It assumes
+[addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) is installed — adjust or
+drop the skill name if you use something else.
 
 ## Permission model at a glance
 
@@ -233,9 +350,17 @@ All green clears the queue.
   (`node/npm/pnpm/bun` for build/run — installs are gated by the hook above).
 - **ask** — `git push`/`--force`, `git reset --hard`, `rebase`, `filter-branch`,
   `clean -f/-fd`. (`curl`/`wget` are handled by the hook, not listed here.)
-- **deny** — secrets (`.env`, SSH/GPG/cloud creds) via the Read/Edit/Write tools **and via Bash**
+- **deny** — secrets (`.env`, SSH/GPG/cloud creds) via the Read/Edit tools **and via Bash**
   (the `deny-secret-access.sh` hook), `sudo`/`su`, `--no-verify` commits, `push --mirror`, and
   catastrophic `rm -rf` / `mkfs` / `dd` / `shutdown` forms.
+
+> **Note on `Write(.env)`.** *Reading* a `.env` is denied everywhere, but **creating** one is
+> not: there are no `Write(.env*)` deny rules, so scaffolding a fresh `.env` goes through the
+> normal prompt. `Edit(.env*)` **is** still denied — editing implies reading the existing
+> secret first. If you'd rather block creation too, add back:
+> ```json
+> "Write(.env)", "Write(.env.*)", "Write(//**/.env)", "Write(//**/.env.*)"
+> ```
 
 ## Caveats
 
