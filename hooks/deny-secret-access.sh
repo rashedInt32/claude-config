@@ -39,6 +39,45 @@ for t in $(printf '%s' "$noq" | grep -oE '>>?[[:space:]]*[^[:space:];|&<>]+' | s
   printf '%s' "$t" | grep -Eq "$secret" && emit_deny
 done
 
+# (a2) narrow carve-outs -> EXIT 0 (no opinion), deferring to the normal prompt,
+# which ASKS since cp/mv/ln/docker aren't statically allowlisted. We NEVER emit
+# allow here, so a human still confirms; an imperfect match can at worst turn a
+# hard deny into an ask, never a silent exposure. Applies only to a single simple
+# command (no chaining / redirect / substitution).
+if ! printf '%s' "$noq" | grep -Eq '[;&|<>`]|\$\('; then
+  set -f; set -- $noq; set +f
+  prog0=${1##*/}
+  # .env FAMILY only (not .ssh/.aws/keys/credentials): overwriting a .env from a
+  # non-secret source is the common `cp .env.example .env` setup; key-store /
+  # authorized_keys injection must stay denied, so those are deliberately excluded.
+  envfam='(^|/)\.env(\.[A-Za-z0-9_.-]+)?$'
+  case "$prog0" in
+    cp|mv|ln)
+      # -t/--target-directory relocate the target, breaking the "last arg = dest"
+      # assumption -> don't carve out, let the deny stand.
+      if ! printf '%s' "$noq" | grep -Eq '(^|[[:space:]])(-t|--target-directory)([[:space:]]|=|$)'; then
+        shift
+        set -f; pos=""; for a in "$@"; do case "$a" in -*) ;; *) pos="$pos $a" ;; esac; done
+        set -- $pos; set +f
+        if [ $# -eq 2 ]; then
+          # dest is a .env-family path AND source references no secret (the source
+          # .env.example was already neutralized to .ENVSAFE above).
+          if printf '%s' "$2" | grep -Eq "$envfam" && ! printf '%s' "$1" | grep -Eq "$secret"; then
+            exit 0
+          fi
+        fi
+      fi
+      ;;
+    docker|docker-compose|podman|podman-compose)
+      # secret only referenced as an --env-file/--env value (passed to a container,
+      # not read to stdout) -> defer to the prompt. A -v mount of ~/.ssh, etc. keeps
+      # the secret in the command after stripping and still hits the deny below.
+      stripped=$(printf '%s' "$noq" | sed -E 's/(--env-file|--env)(=[^[:space:]]+|[[:space:]]+[^[:space:]]+)//g')
+      printf '%s' "$stripped" | grep -Eq "$secret" || exit 0
+      ;;
+  esac
+fi
+
 # (b) every command-position program must be a metadata-only op; anything that
 # reads/copies/transmits/interprets contents -> deny.
 metasafe=" ls stat file test [ chmod chown chgrp chflags find realpath readlink dirname basename du df which type pwd cd echo printf git mkdir touch "
