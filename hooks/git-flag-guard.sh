@@ -44,7 +44,8 @@ while [ $i -lt $n ]; do
   # Parse the options that follow this `git`, tracking whether any global flag
   # appeared and what the resolved subcommand is.
   j=$((i + 1))
-  has_global=0
+  has_global=0   # any global flag seen (cosmetic or real) -> can vouch a read-only sub
+  has_real=0     # a repo-retargeting/unknown flag seen -> forces a write sub into deny
   sub=""
   while [ $j -lt $n ]; do
     o="${toks[$j]}"
@@ -58,15 +59,21 @@ while [ $i -lt $n ]; do
         decide="deny_config"; break ;;
       # global options that consume the NEXT token as their argument
       -C|--git-dir|--work-tree|--namespace|--super-prefix|--exec-path)
-        has_global=1; j=$((j + 2)); continue ;;
+        has_global=1; has_real=1; j=$((j + 2)); continue ;;
       # global options with an attached =value, or standalone global flags
       --git-dir=*|--work-tree=*|--namespace=*|--exec-path=*|--super-prefix=*)
+        has_global=1; has_real=1; j=$((j + 1)); continue ;;
+      # cosmetic flags: don't retarget the repo or enable exec. They still vouch a
+      # read-only sub (has_global), but must NOT force a write sub into deny
+      # (has_real stays 0), so `git --no-pager commit` falls through to normal rules
+      # while `git --no-pager log` is still auto-allowed.
+      -p|-P|--paginate|--no-pager|--no-optional-locks)
         has_global=1; j=$((j + 1)); continue ;;
-      -p|--paginate|-P|--no-pager|--bare|--no-replace-objects|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs|--no-optional-locks|--no-advice)
-        has_global=1; j=$((j + 1)); continue ;;
+      --bare|--no-replace-objects|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs|--no-advice)
+        has_global=1; has_real=1; j=$((j + 1)); continue ;;
       -*)
-        # unknown leading option: treat as a global flag, skip it (defensive)
-        has_global=1; j=$((j + 1)); continue ;;
+        # unknown leading option: treat as a real global flag, skip it (defensive)
+        has_global=1; has_real=1; j=$((j + 1)); continue ;;
       *)
         sub="$o"; break ;;
     esac
@@ -75,9 +82,10 @@ while [ $i -lt $n ]; do
   if [ -n "$sub" ] && [ $has_global -eq 1 ]; then
     if printf '%s' "$sub" | grep -Eq "$readonly_re"; then
       [ -z "$decide" ] && decide="allow"   # tentative; a later write still wins
-    else
-      decide="deny"; break
+    elif [ $has_real -eq 1 ]; then
+      decide="deny"; break                 # write sub reached via a repo-retargeting flag
     fi
+    # write sub behind ONLY cosmetic flags -> no opinion, fall through to normal rules
   fi
   i=$j
 done
