@@ -46,10 +46,22 @@
 # git-flag-guard's domain), and no exec/write-capable flag follows (--output,
 # -O/--open-files-in-pager, --upload-pack, --ext-diff, ...). When a command
 # mixes git with cd, every cd target must stay inside a trusted root
-# ($HOME/Documents/codes, $HOME/.claude) or be a relative path without `..` —
-# otherwise we stay silent and the built-in warning still applies.
+# (see TRUSTED_ROOTS below) or be a relative path without `..` — otherwise we
+# stay silent and the built-in warning still applies.
 # GIT_* env prefixes (GIT_EXTERNAL_DIFF, GIT_PAGER, ...) also force silence,
 # since they can make even a read-only subcommand execute something.
+
+# --- CONFIGURE ME -------------------------------------------------------------
+# Absolute roots under which `cd <dir> && git log`-style sweeps are trusted. A
+# malicious repo's config can execute code via git, so this is deliberately a
+# small allowlist, NOT "anywhere". Set it to where your own code actually lives;
+# `..` climbing out is rejected even from inside a trusted root. Relative `cd`
+# without a climb is always fine, so this only affects absolute paths.
+TRUSTED_ROOTS=(
+  "$HOME/code"
+  "$HOME/.claude"
+)
+# ------------------------------------------------------------------------------
 
 cmd="$(jq -r '.tool_input.command // empty')"
 [ -z "$cmd" ] && exit 0
@@ -261,9 +273,16 @@ while IFS= read -r seg; do
     case "$tgt" in
       *..*) cd_untrusted=1 ;;                             # any climb -> untrusted (even under a trusted prefix)
       ''|-) : ;;                                          # home / OLDPWD
-      "$HOME/Documents/codes"|"$HOME/Documents/codes"/*) : ;;
-      "$HOME/.claude"|"$HOME/.claude"/*) : ;;
-      /*) cd_untrusted=1 ;;                               # absolute, outside trusted roots
+      /*)
+        # absolute: trusted only if under a TRUSTED_ROOTS entry. Use a LOCAL flag —
+        # never clear cd_untrusted here, or a later trusted cd would forgive an
+        # earlier untrusted one (`cd /evil && cd ~/code && git log`).
+        _ok=0
+        for _root in "${TRUSTED_ROOTS[@]}"; do
+          case "$tgt" in "$_root"|"$_root"/*) _ok=1; break ;; esac
+        done
+        [ "$_ok" -eq 1 ] || cd_untrusted=1
+        ;;
       *) : ;;                                             # relative without a climb -> fine
     esac
   fi
