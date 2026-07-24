@@ -14,6 +14,7 @@ sid=$(printf '%s' "$input" | jq -r '.session_id // "default"' 2>/dev/null)
 stop_active=$(printf '%s' "$input" | jq -r '.stop_hook_active // false' 2>/dev/null)
 q="${TMPDIR:-/tmp}/claude-tsq-${sid}.txt"
 
+[ -f "$HOME/.claude/.no-typecheck" ] && { rm -f "$q"; exit 0; }   # opt-out sentinel: skip typecheck entirely
 [ -f "$q" ] || exit 0   # nothing edited this turn
 
 # Unique project dirs (nearest package.json above each edited file).
@@ -80,6 +81,9 @@ if [ "$stop_active" = "true" ]; then
   exit 0
 fi
 
-# First pass: keep the queue and send the model back to fix ONLY its own errors.
-jq -cn --arg r "$(printf 'Typecheck failed in files YOU edited this turn. Fix ONLY these errors — pre-existing errors elsewhere are already known, leave them alone:%b' "$fails")" '{decision:"block", reason:$r}'
+# Warn-only: surface the errors in files edited this turn as a non-blocking note.
+# No forced round-trip — the model is informed but the turn ends normally. Create
+# ~/.claude/.no-typecheck to skip the typecheck run entirely.
+rm -f "$q"
+jq -cn --arg r "$(printf 'Typecheck failed in files you edited this turn (not blocking) — worth fixing before you move on; pre-existing errors elsewhere are already known, leave them alone:%b' "$fails")" '{systemMessage:$r}'
 exit 0
