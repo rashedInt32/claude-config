@@ -27,6 +27,8 @@ hooks/
 commands/
   rv.md                       # /rv  — review a diff with a fresh-context subagent
   strict.md                   # /strict — hard rules preamble for a task
+scripts/
+  check-deny-drift.sh         # (maintainer) warn when the example's deny list falls behind the real config
 settings.example.json         # permissions (allow/deny/ask) + hook wiring + editorMode
 keybindings.example.json      # Shift+Enter = newline (so plain Enter submits)
 CLAUDE.example.md             # optional global guidelines (skill routing)
@@ -344,6 +346,26 @@ input, data storage) to a hardening skill **before** the code gets written. It a
 [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) is installed — adjust or
 drop the skill name if you use something else.
 
+### `scripts/check-deny-drift.sh` (maintainer only)
+`settings.example.json` is a hand-maintained mirror of a real `~/.claude/settings.json`, and the
+`deny` list is the part carrying actual security weight. If a deny rule lands in the real config
+and not the example, everyone adopting this repo gets *less* protection than the maintainer
+decided they needed — and nothing catches it. This script diffs the two `permissions.deny` arrays
+and reports both directions, comparing the **staged** example (what will actually be committed)
+rather than the working tree.
+
+Warn-only: it prints and exits 0. These settings deny `git commit --no-verify`, so a blocking
+hook would be a trap with no way out; flip the final `exit 0` to `exit 1` if you want it to block
+anyway. It exits silently when `~/.claude/settings.json` is absent, so clones and CI are unaffected.
+
+```sh
+./scripts/check-deny-drift.sh                       # one-off
+CLAUDE_SETTINGS=/path/to/settings.json ./scripts/check-deny-drift.sh   # compare against another config
+
+printf '#!/usr/bin/env bash\nexec "$(git rev-parse --show-toplevel)/scripts/check-deny-drift.sh"\n' \
+  > .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit            # run on every commit
+```
+
 ## Permission model at a glance
 
 - **allow** — read-only git (incl. plumbing), coreutils, search tools, and JS runtimes
@@ -369,4 +391,7 @@ drop the skill name if you use something else.
 - Tested on macOS (BSD userland). The hooks use portable constructs but if you hit a
   GNU/BSD `sed`/`grep` quirk, open an issue.
 - Don't commit your real `~/.claude/settings.json` — it may contain machine paths,
-  tokens, or org IDs. `.gitignore` here already excludes `settings.json`.
+  tokens, or org IDs. `.gitignore` here excludes `settings*.json` (broad on purpose: it
+  catches `settings.local.json` and stray copies like `settings.backup.json` too) and
+  negates `settings.example.json` back in. Note that `.gitignore` has no effect on a file
+  that's already tracked, or on `git add -f`.

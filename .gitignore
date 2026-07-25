@@ -1,6 +1,11 @@
-# Never commit a real settings file or anything machine-specific / secret
-settings.json
-settings.local.json
+# Never commit a real settings file or anything machine-specific / secret.
+# `settings*.json` is deliberately broad: it catches settings.json,
+# settings.local.json, and stray copies like settings.backup.json that a
+# narrower pattern would let through. The example is the only one that belongs
+# in the repo, so it's negated back in.
+settings*.json
+!settings.example.json
+
 *.local.json
 .DS_Store
 *.log
