@@ -34,9 +34,43 @@ readonly_re='^(status|log|diff|show|branch|blame|remote|tag|reflog|describe|rev-
 decide=""
 n=${#toks[@]}
 i=0
+
+# Only a token in COMMAND POSITION is a git invocation. `gitleaks git --staged`
+# and `jj git push` put `git` in ARGUMENT position: there it is the other tool's
+# subcommand, and the flags after it belong to that tool, not to git. Scanning
+# every token for `git` read those as git's own global flags and denied commands
+# that never invoked git at all.
+cmd_pos=1
 while [ $i -lt $n ]; do
-  base="${toks[$i]##*/}"
+  tok="${toks[$i]}"
+
+  # A separator ends the current command, so the next real word starts one.
+  case "$tok" in
+    '&&'|'||'|';'|'|'|'|&'|'&'|'('|')'|'{'|'}')
+      cmd_pos=1; i=$((i + 1)); continue ;;
+  esac
+
+  if [ $cmd_pos -eq 0 ]; then
+    i=$((i + 1)); continue          # an argument to some other command
+  fi
+
+  base="${tok##*/}"
+
+  # Words that PRECEDE the real command without being it -- stay in command
+  # position and keep looking, so `env git -C /x push` is still resolved.
+  # sudo/doas are denied outright in settings.json; listing them here costs
+  # nothing and keeps this hook correct standalone.
+  case "$base" in
+    sudo|doas|env|command|builtin|exec|nohup|time|timeout|stdbuf|xargs)
+      i=$((i + 1)); continue ;;
+  esac
+  case "$tok" in
+    -*)  i=$((i + 1)); continue ;;  # a flag belonging to one of those wrappers
+    *=*) i=$((i + 1)); continue ;;  # VAR=value assignment prefix
+  esac
+
   if [ "$base" != "git" ]; then
+    cmd_pos=0                       # some other command owns what follows
     i=$((i + 1))
     continue
   fi
@@ -50,7 +84,15 @@ while [ $i -lt $n ]; do
   while [ $j -lt $n ]; do
     o="${toks[$j]}"
     case "$o" in
-      '&&'|'||'|';'|'|'|'|&'|'>'|'>>'|'<'|'2>'|'2>>'|'&')
+      '&&'|'||'|';'|'|'|'|&'|'&'|'('|')')
+        break ;;
+      # Redirections end the argument list. `2>&1` used to be missing here, so
+      # it fell through to the catch-all below and became `sub` -- a
+      # "subcommand" that is never read-only, which denied commands containing
+      # no git write at all (`git --bare 2>&1`). Cover the numbered forms too.
+      '<'|'<<'|'<<<'|'>'|'>>'|'&>'|'&>>'|'>&')
+        break ;;
+      [0-9]'>'|[0-9]'>>'|[0-9]'<'|[0-9]'>&'*|[0-9]'<&'*|'>&'[0-9]*)
         break ;;
       # -c/--config-env can set command-executing config (core.pager,
       # core.sshCommand, diff.external, alias.*, ...) that runs an arbitrary
@@ -87,6 +129,9 @@ while [ $i -lt $n ]; do
     fi
     # write sub behind ONLY cosmetic flags -> no opinion, fall through to normal rules
   fi
+  # Whatever stopped the inner scan belongs to this git call, not a new command.
+  # If it was a separator, the top of the outer loop resets cmd_pos back to 1.
+  cmd_pos=0
   i=$j
 done
 
