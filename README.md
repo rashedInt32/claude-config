@@ -29,6 +29,9 @@ commands/
   strict.md                   # /strict — hard rules preamble for a task
 scripts/
   check-deny-drift.sh         # (maintainer) warn when the example's deny list falls behind the real config
+  check-secrets.sh            # (maintainer) pre-commit: block a commit that stages a credential
+tests/
+  git-flag-guard.bats         # deny/allow/silent cases for the git guard
 settings.example.json         # permissions (allow/deny/ask) + hook wiring + editorMode
 keybindings.example.json      # Shift+Enter = newline (so plain Enter submits)
 CLAUDE.example.md             # optional global guidelines (skill routing)
@@ -383,6 +386,42 @@ printf '#!/usr/bin/env bash\nexec "$(git rev-parse --show-toplevel)/scripts/chec
 > ```json
 > "Write(.env)", "Write(.env.*)", "Write(//**/.env)", "Write(//**/.env.*)"
 > ```
+
+## Contributing / maintainer setup
+
+Tests for the git guard use [bats](https://github.com/bats-core/bats-core):
+
+```sh
+brew install bats-core        # or: npm i -g bats
+bats tests/git-flag-guard.bats
+```
+
+They assert three outcomes per command — `deny` (the bypass the hook exists to
+stop), `allow` (read-only, vouched so it doesn't prompt), and `silent` (no
+opinion, falls through to the normal rules). A `silent` expectation is a real
+assertion: it means the hook correctly recognised the command as none of its
+business. Run them before touching `hooks/git-flag-guard.sh` — the deny cases
+are the ones that must never regress.
+
+Git does not track `.git/hooks/`, so the two maintainer checks in `scripts/`
+have to be wired up by hand once per clone:
+
+```sh
+cat > .git/hooks/pre-commit <<'EOF'
+#!/usr/bin/env bash
+root=$(git rev-parse --show-toplevel) || exit 0
+"$root/scripts/check-secrets.sh" || exit 1
+exec "$root/scripts/check-deny-drift.sh"
+EOF
+chmod +x .git/hooks/pre-commit
+```
+
+`check-secrets.sh` **blocks** the commit (a credential reaching a public remote
+is scraped within minutes and can't be un-leaked; rotate it, don't just delete
+the line). It needs `gitleaks` — without it the check warns and lets the commit
+through rather than breaking on a machine that doesn't have it. False positives
+go in `.gitleaksignore` as fingerprints, so the exception is visible in review.
+`check-deny-drift.sh` only warns.
 
 ## Caveats
 
