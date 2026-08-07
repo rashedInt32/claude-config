@@ -26,6 +26,7 @@ hooks/
   typecheck-on-stop.sh        # (workflow) typecheck those projects when the turn ends
 commands/
   rv.md                       # /rv  — review a diff with a fresh-context subagent
+  bugfix.md                   # /bugfix — reproduce, fix, prove fixed, review
   strict.md                   # /strict — hard rules preamble for a task
 scripts/
   check-deny-drift.sh         # (maintainer) warn when the example's deny list falls behind the real config
@@ -88,7 +89,7 @@ CLAUDE.example.md             # optional global guidelines (skill routing)
 5. **(Optional) Slash commands & global guidelines.**
    ```sh
    mkdir -p ~/.claude/commands
-   cp commands/*.md ~/.claude/commands/    # adds /rv and /strict
+   cp commands/*.md ~/.claude/commands/    # adds /rv, /bugfix and /strict
    cp CLAUDE.example.md ~/.claude/CLAUDE.md
    ```
    See [Slash commands & guidelines](#slash-commands--guidelines) below. `CLAUDE.md` is
@@ -337,6 +338,32 @@ default, inverted condition, off-by-one, stale state), workarounds that need a l
 justify themselves, and weakened or deleted assertions. Told plainly not to invent issues to look
 useful.
 
+It is told to **prove findings by execution** — a reproduced bug beats a plausible one — and may
+build, test, and drive loopback. That capability needs a leash, so it must stop and ask before
+reaching a non-loopback host, writing outside a scratch directory, or using credentials from the
+environment. A local server is usually already running: it reuses that one after confirming the
+server actually serves the current diff, and it may never kill or restart a server it did not
+start. Output is findings only, with at most three lines on what the change gets right.
+
+### `/bugfix` — reproduce, fix, prove, review
+A six-step loop for bug work, built around one rule: **no red check, no fix.** Step 1 builds a
+single check that fails on this bug, taking the cheapest form that works — a devtools
+`evaluate_script` assertion returning a boolean (the default for anything in a browser), a
+throwaway test when devtools can't reach it, or a Playwright script only for intermittent bugs.
+If no check can be built it stops rather than hypothesising. Visual bugs are handed back with
+that said plainly, because a screenshot is not an assertion.
+
+It then **pauses for your approval** of the diagnosis before touching code. After the fix it
+re-runs the *same* invocation, which must now go green, and shows red and green together. The
+repro is throwaway by default: at the end it asks whether to keep or bin it, with a
+recommendation — keep if the bug reached users or sits at a stable seam, bin if it drives
+internals or needed heavy mocking. Finishes by running `/rv` on the diff. Never commits, never
+pushes.
+
+Assumes [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) and
+[mattpocock/skills](https://github.com/mattpocock/skills) are installed; the devtools branch
+needs the `chrome-devtools` MCP server. Drop the skill references if you use something else.
+
 ### `/strict` — hard rules for a task
 Prepends eight non-negotiable rules to `$ARGUMENTS`: no workarounds or stubs, minimal change,
 tests are ground truth (never skip or weaken one to go green), no history-discarding git
@@ -344,10 +371,17 @@ tests are ground truth (never skip or weaken one to go green), no history-discar
 claiming done and show the output, and stop and ask rather than guess.
 
 ### `CLAUDE.example.md`
-Four lines of user-global guidance that route security-sensitive work (auth, secrets, untrusted
-input, data storage) to a hardening skill **before** the code gets written. It assumes
+User-global guidance, two rules. The first routes security-sensitive work (auth, secrets,
+untrusted input, data storage) to a hardening skill **before** the code gets written. It assumes
 [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) is installed — adjust or
 drop the skill name if you use something else.
+
+The second is a **response shape** rule: lead diagnosis and fix turns with a three-line
+Verified / Issue / Fix block, skip it on open questions, keep sentences short, and cap the
+response at three sections. It exists because the same guidance kept in an auto-memory file did
+not work — only the one-line memory *index* loads each session, so the constraints themselves
+were never in context. Behavioural rules that must fire on every turn belong in `CLAUDE.md`;
+memory is for facts you look up when they become relevant.
 
 ### `scripts/check-deny-drift.sh` (maintainer only)
 `settings.example.json` is a hand-maintained mirror of a real `~/.claude/settings.json`, and the
