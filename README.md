@@ -25,7 +25,7 @@ hooks/
   record-ts-edit.sh           # (workflow) note which .ts/.tsx files were edited this turn
   typecheck-on-stop.sh        # (workflow) typecheck those projects when the turn ends
 commands/
-  rv.md                       # /rv  — review a diff with a fresh-context subagent
+  rv.md                       # /rv  — two-stage diff review: detect, then validate each finding in a fresh context
   bugfix.md                   # /bugfix — reproduce, fix, prove fixed, review
   strict.md                   # /strict — hard rules preamble for a task
 scripts/
