@@ -213,8 +213,9 @@ while IFS= read -r seg; do
   esac
 
   if [ "$prog" = "find" ]; then
-    # read-only find: reject destructive / exec / file-writing actions (mirrors
-    # find-guard). Used mainly to validate `find ... | head` inside a vouched
+    # read-only find: reject destructive / exec / file-writing actions. Sole
+    # find authority since find-guard.sh was removed (2026-08-24, redundant).
+    # Used mainly to validate `find ... | head` inside a vouched
     # VAR=$(...) substitution, but applies anywhere find appears in the sweep.
     printf '%s' "$seg" | grep -Eq '(^|[[:space:]])(-delete|-exec|-execdir|-ok|-okdir|-fprint|-fprintf|-fls)([[:space:]]|$)' && exit 0
     found=1

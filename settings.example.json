@@ -2,6 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "env": {
     "DISABLE_TELEMETRY": "1",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
     "DO_NOT_TRACK": "1",
     "BASH_DEFAULT_TIMEOUT_MS": "300000"
   },
@@ -217,11 +218,6 @@
             "type": "command",
             "command": "bash \"$HOME/.claude/hooks/allow-localhost-curl.sh\"",
             "statusMessage": "Checking localhost curl"
-          },
-          {
-            "type": "command",
-            "command": "bash \"$HOME/.claude/hooks/find-guard.sh\"",
-            "statusMessage": "Checking find"
           },
           {
             "type": "command",

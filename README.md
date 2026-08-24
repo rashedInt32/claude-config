@@ -1,13 +1,13 @@
 # claude-config
 
 A curated [Claude Code](https://docs.claude.com/en/docs/claude-code) permission setup
-plus seven safety hooks (and two workflow hooks). The guiding principle:
+plus six safety hooks (and two workflow hooks). The guiding principle:
 
 > **Read freely, gate on write.** Investigation/read commands run without prompting;
 > anything that changes state (writes, pushes, history rewrites, installs, deletes)
 > still asks.
 
-The real value is `settings.example.json` (the permission model) and the seven safety
+The real value is `settings.example.json` (the permission model) and the six safety
 hooks in `hooks/` that close gaps a static allowlist can't. Two extra workflow hooks
 typecheck edited TypeScript at the end of each turn.
 
@@ -18,8 +18,7 @@ hooks/
   deny-secret-access.sh       # block Bash access to .env / keys / credential stores
   ask-on-package-install.sh   # always confirm npm/pnpm/yarn/bun installs
   git-flag-guard.sh           # close the `git -C` / global-flag bypass
-  allow-localhost-curl.sh     # auto-allow localhost curl/wget, ask otherwise
-  find-guard.sh               # auto-allow read-only find, ask on -delete/-exec/...
+  allow-localhost-curl.sh     # auto-allow localhost curl/wget + read-only remote GET/HEAD probes, ask otherwise
   allow-readonly-pipeline.sh  # auto-allow all-read-only pipelines (incl. read-only git + sed/awk) the built-in matcher balks at
   allow-readonly-python.sh    # auto-allow read-only `python -c` inspection one-liners
   record-ts-edit.sh           # (workflow) note which .ts/.tsx files were edited this turn
@@ -99,7 +98,7 @@ CLAUDE.example.md             # optional global guidelines (skill routing)
    startup** — changes to `allow`/`deny`/`ask` only take effect after a restart (or
    reopening via `/hooks`).
 
-## The seven hooks
+## The six hooks
 
 ### `deny-secret-access.sh`
 The `deny` rules for secrets (`Read(.env)`, `Read(~/.ssh/**)`, `Read(//**/*.pem)`, …) are scoped
@@ -172,38 +171,19 @@ Tokenizes without `eval`/command-substitution, so the guard itself can't be inje
 overrides a hook's `allow`). This hook is their sole authority:
 - **allow** when every `http(s)` URL is localhost / `127.0.0.1` / `::1`, there are no file
   writes or non-curl command substitutions, **and** every companion command is read-only
-  (same allowlist as find-guard — so `curl localhost && bash -c "…"` asks),
+  (same allowlist as the pipeline hook — so `curl localhost && bash -c "…"` asks),
+- **allow** a stricter *remote* tier for any host: `curl` only (wget downloads by
+  default), GET/HEAD only, no data/upload/auth/cookie/cert/proxy flags, no `$`
+  env expansion or substitutions anywhere, no header-from-file (`-H @f`), no curl
+  templating (`--variable`/`--expand-*`), no credential-looking words in the command
+  — short flags are checked as *clusters*, so glued forms (`-sd`, `-sO`, `-sXPOST`)
+  can't slip past word-boundary regexes,
 - **ask** for anything else.
 
-So localhost health-checks and port probes run silently, while outbound curl, file
-writes (`-o`, `-O`, `>`), `@host` tricks, and `curl localhost && rm -rf ~` all still
+So localhost health-checks, port probes, and read-only remote probes (`curl -sI
+https://api…`, `curl -s … | jq .`) run silently, while POSTs, request bodies, auth
+material, file writes (`-o`, `-O`, `>`), and `curl localhost && rm -rf ~` all still
 prompt (and `deny` rules still hard-block the dangerous ones).
-
-### `find-guard.sh`
-`find` is dual-use — `-delete` and `-exec rm {} \;` are destructive — so it's deliberately
-**not** allowlisted. But that means every read-only search prompts, which is noise. This
-hook makes `find` usable without opening the destructive door:
-- **allow** read-only `find` (`-type`, `-name`, `-ipath`, `-print`, `-prune`, …),
-- **ask** when it sees `-delete`, `-exec`, `-execdir`, `-ok`, `-fprint*`, `-fls`, a file
-  redirect, a backtick, or **any companion command that isn't provably read-only**.
-
-A `$(…)` is **deferred** to `allow-readonly-pipeline` (which vouches the read-only
-`VAR=$(find …)` form), so `f=$(find . -name X | head -1); grep -n foo "$f"` no longer prompts.
-A *destructive* find inside `$()` is still caught here by the `-delete`/`-exec` check above.
-
-The companion check is an **allowlist, not a denylist** — every command-position program must be
-`find`, a read-only tool (`cat`/`grep`/`head`/…), or a read-only `git`/`xargs` invocation.
-So `find … && git log` and `find … | xargs grep` run without a prompt, while `find … && git push`,
-`find … | xargs rm`, **and `find … && bash -c "…"` / `… && ./script.sh`** all ask — an
-interpreter or arbitrary executable can hide a destructive payload a word-scan can't see, so it
-never rides along inside an "allowed" find. Dangerous words inside quotes (`-name '*git*'`,
-`echo "rm -rf"`) and inside paths don't trip it — only real command-position programs do.
-
-Why a hook instead of "just use `fd`"? Because a *preference* to use `fd` can't be relied
-on — it doesn't propagate across projects or sessions, and pasted `find` one-liners ignore
-it. A hook in `settings.json` is **global and deterministic**: read-only `find` works
-everywhere, destructive `find` is gated everywhere. (`fd` is still allowlisted and is a
-fine, faster choice when you reach for it.)
 
 ### `allow-readonly-pipeline.sh`
 Claude Code's built-in matcher auto-approves a compound command only when it can statically
@@ -222,9 +202,10 @@ decompose it and match every leaf — it gives up on gnarly shells (mixed `&&`/`
 variable, never at command position, and a later `$var` used *as* a command isn't read-only
 so it bails. Any other `$(…)` — at command position (`$(printf rm) file`), as a bare
 argument (`echo $(date)`), nested, or arithmetic — keeps the hook silent. Backticks and
-process substitution always bail. (`find-guard` defers its `$(…)` ask to this hook, so a
-read-only `VAR=$(find …)` no longer prompts; a destructive find inside `$()` is still caught
-by `find-guard`'s `-delete`/`-exec` check.)
+process substitution always bail. (This hook is also the sole `find`
+authority — the separate `find-guard.sh` was removed 2026-08-24 as a full duplicate of the
+read-only find check below; a destructive `find -delete`/`-exec` simply falls through to the
+normal prompt.)
 
 It also vouches **read-only git** (`status`, `log`, `diff`, `show`, `branch`, `blame`,
 `stash list`, …), which is what defeats Claude Code's built-in *"changes directory before
@@ -261,8 +242,8 @@ read-only checks** instead of a blanket exclusion: **`find`** is vouched only wh
 itself in the read-only set — so `ls | xargs -n1 basename` auto-allows, while `xargs rm`,
 `xargs sh -c "…"`, a separated option arg (`xargs -n 1 …`), or a bare `xargs` all fall back to a
 prompt. (To stay safe against the earlier `{}`-stripping, only no-arg flags and *attached* option
-args — `-n1`, `-P4`, `-I{}` — are parsed; anything ambiguous bails. This mirrors `find-guard`'s
-own `find … | xargs grep` vs `find … | xargs rm` split.)
+args — `-n1`, `-P4`, `-I{}` — are parsed; anything ambiguous bails — the same
+`find … | xargs grep` vs `find … | xargs rm` split the find check makes.)
 
 `sed`/`awk` are deliberately **not** in the static `allow` list (like `find`), so this hook is
 their sole authority: read-only forms auto-allow here, while `sed -i`, redirects, and the other
