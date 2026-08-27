@@ -171,7 +171,12 @@ Tokenizes without `eval`/command-substitution, so the guard itself can't be inje
 overrides a hook's `allow`). This hook is their sole authority:
 - **allow** when every `http(s)` URL is localhost / `127.0.0.1` / `::1`, there are no file
   writes or non-curl command substitutions, **and** every companion command is read-only
-  (same allowlist as the pipeline hook — so `curl localhost && bash -c "…"` asks),
+  (same allowlist as the pipeline hook — so `curl localhost && bash -c "…"` asks).
+  The port is never part of the decision, so `:3000`, `:3001`, `:5173` are alike.
+  Read-only `sed`/`awk` are companions here too, gated exactly as the pipeline hook
+  gates them (no `-i`/`-f`, and the quoted script is scanned for `w`/`r`/`e`,
+  `system()`, `getline`, and `print > file`); so are `python[3] -m json.tool` in that
+  exact form, `xmllint`/`tidy` without `-o`, `bat`, and `pbcopy`,
 - **allow** a stricter *remote* tier for any host: `curl` only (wget downloads by
   default), GET/HEAD only, no data/upload/auth/cookie/cert/proxy flags, no `$`
   env expansion or substitutions anywhere, no header-from-file (`-H @f`), no curl
@@ -180,10 +185,29 @@ overrides a hook's `allow`). This hook is their sole authority:
   can't slip past word-boundary regexes,
 - **ask** for anything else.
 
+Two details decide more cases than they look like they should. A **quoted** URL is
+invisible to the both-quotes-stripped copy the word checks run on, so whole-token
+quoted URLs are recovered from the raw command — otherwise `curl "http://localhost:3000/x"`
+asks while the unquoted form allows. And curl's own write flags (`-o`, `-O`, `-T`,
+`-D`, `-K`, `-J`) are matched against the **curl segments only**, so a companion's
+`grep -o` or `sort -o` can't be read as curl writing a file.
+
+Command position includes loop and conditional bodies, so `for p in …; do curl -s
+"http://localhost:3000/$p" | head; done` and `if curl -sf …; then` are covered by
+every check above rather than falling through to a built-in prompt.
+
+An expansion inside the URL *authority* is never local: `http://localhost:3000$X`
+becomes a request to `evil.com` when `X='@evil.com'`. The one exception is a literal
+loopback host with `:$PORT`, where `PORT=<integer>` is assigned in the same command
+(`PORT=3001; curl -s "http://localhost:$PORT/x"`) — then the value is one the hook has
+actually seen. A `$PORT` inherited from the environment still asks. An expansion in the
+*path* (`…:3000/$p`) is fine, since it can't move the host.
+
 So localhost health-checks, port probes, and read-only remote probes (`curl -sI
 https://api…`, `curl -s … | jq .`) run silently, while POSTs, request bodies, auth
-material, file writes (`-o`, `-O`, `>`), and `curl localhost && rm -rf ~` all still
-prompt (and `deny` rules still hard-block the dangerous ones).
+material, file writes (`-o`, `-O`, `>`, `| tee f`), and `curl localhost && rm -rf ~` all
+still prompt (and `deny` rules still hard-block the dangerous ones). `wget` is a
+downloader by default, so it asks unless it is an explicit `-O /dev/null` probe.
 
 ### `allow-readonly-pipeline.sh`
 Claude Code's built-in matcher auto-approves a compound command only when it can statically
