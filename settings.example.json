@@ -206,8 +206,8 @@
           },
           {
             "type": "command",
-            "command": "bash \"$HOME/.claude/hooks/ask-on-package-install.sh\"",
-            "statusMessage": "Checking for package install"
+            "command": "bash \"$HOME/.claude/hooks/ask-on-force-push.sh\"",
+            "statusMessage": "Checking for force push"
           },
           {
             "type": "command",

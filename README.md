@@ -16,7 +16,7 @@ typecheck edited TypeScript at the end of each turn.
 ```
 hooks/
   deny-secret-access.sh       # block Bash access to .env / keys / credential stores
-  ask-on-package-install.sh   # always confirm npm/pnpm/yarn/bun installs
+  ask-on-force-push.sh        # always confirm a force push, in any argument order
   git-flag-guard.sh           # close the `git -C` / global-flag bypass
   allow-localhost-curl.sh     # auto-allow localhost curl/wget + read-only remote GET/HEAD probes, ask otherwise
   allow-readonly-pipeline.sh  # auto-allow all-read-only pipelines (incl. read-only git + sed/awk) the built-in matcher balks at
@@ -133,15 +133,24 @@ still confirms, so an imperfect match can at worst cost you a keystroke):
 
 
 
-### `ask-on-package-install.sh`
-The package managers (`npm`, `pnpm`, `yarn`, `bun`) are allowlisted so build/run/test
-commands don't prompt — but **installs always should**. This hook detects
-`install/add/ci/update/upgrade/i` anywhere in the command (including `npx pnpm@9 install`,
-`pnpm -C pkg add`, `corepack pnpm add`) and forces a confirmation.
+### `ask-on-force-push.sh`
+`permissions.ask` patterns are **prefix matches**, so `Bash(git push --force:*)` only fires
+when the flag sits immediately after `push`. **`git push origin main --force` matches nothing.**
+A blanket `Bash(git push:*)` ask rule hides that gap by prompting on every push — but the
+moment you drop it to cut friction, force pushes become classifier-reviewed instead of
+confirmed. This hook closes the gap directly, so force-push protection no longer depends on
+argument order or on the blanket rule staying in place.
 
-A **script named after an install verb** is not an install: `npm run ci` and `pnpm run update`
-are neutralized before the scan, so they don't prompt. A real install elsewhere in the same
-command still matches (`npm run build && npm install lodash` asks).
+It asks on `--force`, `--force-with-lease`, `--force-if-includes`, `-f` anywhere in the
+arguments (including clusters like `-uf`), and the flagless `+refspec` form (`git push origin
++main`). Global flags between `git` and `push` are skipped, including ones that take a
+separate value word (`git -C /repo push … --force`) — `git-flag-guard.sh` already denies that
+shape, so this is defense in depth.
+
+Everything else stays **silent**: a plain push, `-u`, `--tags`, `--dry-run`, and any mention
+of the words inside a quoted string (`git commit -m "revert the git push --force"`). Silence
+matters here — a hook `ask` outranks auto mode, so over-matching would drag safe pushes back
+to a manual prompt. See `tests/ask-on-force-push.bats`.
 
 ### `git-flag-guard.sh`
 Allow rules are **prefix matches** (`Bash(git diff:*)`). A leading global flag shifts the
